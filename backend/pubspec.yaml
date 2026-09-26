@@ -1,0 +1,12 @@
+name: kryptox_backend
+description: Dart (shelf) backend for the KryptoX crypto research app.
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.3.0
+
+dependencies:
+  http: ^1.2.2
+  shelf: ^1.4.1
+  shelf_router: ^1.1.4
