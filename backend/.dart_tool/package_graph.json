@@ -7,11 +7,21 @@
       "name": "kryptox_backend",
       "version": "1.0.0",
       "dependencies": [
+        "convert",
+        "crypto",
         "http",
         "shelf",
-        "shelf_router"
+        "shelf_router",
+        "uuid"
       ],
       "devDependencies": []
+    },
+    {
+      "name": "crypto",
+      "version": "3.0.7",
+      "dependencies": [
+        "typed_data"
+      ]
     },
     {
       "name": "shelf_router",
@@ -42,6 +52,13 @@
         "http_parser",
         "meta",
         "web"
+      ]
+    },
+    {
+      "name": "typed_data",
+      "version": "1.4.0",
+      "dependencies": [
+        "collection"
       ]
     },
     {
@@ -102,13 +119,6 @@
       "dependencies": []
     },
     {
-      "name": "typed_data",
-      "version": "1.4.0",
-      "dependencies": [
-        "collection"
-      ]
-    },
-    {
       "name": "string_scanner",
       "version": "1.4.1",
       "dependencies": [
@@ -127,6 +137,26 @@
     {
       "name": "term_glyph",
       "version": "1.2.2",
+      "dependencies": []
+    },
+    {
+      "name": "convert",
+      "version": "3.1.2",
+      "dependencies": [
+        "typed_data"
+      ]
+    },
+    {
+      "name": "uuid",
+      "version": "4.6.0",
+      "dependencies": [
+        "crypto",
+        "fixnum"
+      ]
+    },
+    {
+      "name": "fixnum",
+      "version": "1.1.1",
       "dependencies": []
     }
   ],

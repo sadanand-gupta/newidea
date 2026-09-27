@@ -16,6 +16,7 @@ import '../widgets/controls.dart';
 import '../widgets/formatters.dart';
 import '../widgets/glass.dart';
 import '../widgets/market_widgets.dart';
+import '../widgets/skeleton_loader.dart';
 import '../widgets/state_views.dart';
 import 'navigation.dart';
 
@@ -326,6 +327,12 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
           padding: const EdgeInsets.fromLTRB(20, 14, 16, 0),
           child: Row(
             children: [
+              _GlassIconButton(
+                icon: Icons.menu_rounded,
+                tooltip: 'Menu',
+                onTap: () => Scaffold.of(context).openDrawer(),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -387,10 +394,13 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
           ),
         ];
       }
-      return const [
+      return [
         SliverToBoxAdapter(
-          key: ValueKey('loading'),
-          child: SizedBox(height: 600, child: LoadingView()),
+          key: const ValueKey('loading'),
+          child: SizedBox(
+            height: 600,
+            child: SkeletonLoader(),
+          ),
         ),
       ];
     }

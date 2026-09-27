@@ -46,83 +46,125 @@ class KxDrawer extends StatelessWidget {
             final user = auth.user;
             return Column(
               children: [
-                // Header with user info
+                // Premium header with user info
                 Container(
-                  color: KxColors.bgElevated,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        KxColors.bgElevated.withValues(alpha: 0.8),
+                        KxColors.cyan.withValues(alpha: 0.1),
+                      ],
+                    ),
+                    border: Border(
+                      bottom: BorderSide(color: KxColors.cyan.withValues(alpha: 0.2), width: 1),
+                    ),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Avatar with gradient
                       Container(
-                        width: 56,
-                        height: 56,
+                        width: 68,
+                        height: 68,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: KxColors.brandGradient,
+                          boxShadow: [
+                            BoxShadow(
+                              color: KxColors.cyan.withValues(alpha: 0.3),
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            ),
+                          ],
                         ),
                         alignment: Alignment.center,
                         child: Text(
                           user?.username[0].toUpperCase() ?? 'U',
-                          style: KxText.display(24, color: Colors.black),
+                          style: KxText.display(28, color: Colors.black, weight: FontWeight.w700),
                         ),
                       ),
-                      const SizedBox(height: 12),
-                      Text(user?.username ?? 'User', style: KxText.display(18)),
-                      if (user?.email != null) ...[
-                        const SizedBox(height: 4),
-                        Text(user!.email!, style: KxText.body(12, color: KxColors.textMuted)),
-                      ],
+                      const SizedBox(height: 16),
+                      // Username
+                      Text(
+                        user?.username ?? 'User',
+                        style: KxText.display(20, weight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 6),
+                      // Email
+                      if (user?.email != null)
+                        Text(
+                          user!.email!,
+                          style: KxText.body(13, color: KxColors.textMuted),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 8),
                 // Menu items
                 Expanded(
                   child: ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                     children: [
-                      _DrawerItem(
-                        icon: Icons.person_outline_rounded,
-                        label: 'Profile',
-                        onTap: () {
-                          Navigator.pop(context);
-                          Navigator.of(context).pushNamed('/profile');
-                        },
+                      _MenuSection(
+                        title: 'ACCOUNT',
+                        items: [
+                          _DrawerItem(
+                            icon: Icons.person_rounded,
+                            label: 'Profile',
+                            onTap: () {
+                              Navigator.pop(context);
+                              Navigator.of(context).pushNamed('/profile');
+                            },
+                          ),
+                        ],
                       ),
-                      _DrawerItem(
-                        icon: Icons.candlestick_chart_rounded,
-                        label: 'Markets',
-                        onTap: () => Navigator.pop(context),
+                      _MenuSection(
+                        title: 'NAVIGATION',
+                        items: [
+                          _DrawerItem(
+                            icon: Icons.candlestick_chart_rounded,
+                            label: 'Markets',
+                            onTap: () => Navigator.pop(context),
+                          ),
+                          _DrawerItem(
+                            icon: Icons.insights_rounded,
+                            label: 'Market Stats',
+                            onTap: () => Navigator.pop(context),
+                          ),
+                          _DrawerItem(
+                            icon: Icons.star_rounded,
+                            label: 'Watchlist',
+                            onTap: () => Navigator.pop(context),
+                          ),
+                        ],
                       ),
-                      _DrawerItem(
-                        icon: Icons.insights_rounded,
-                        label: 'Market Stats',
-                        onTap: () => Navigator.pop(context),
-                      ),
-                      _DrawerItem(
-                        icon: Icons.star_rounded,
-                        label: 'Watchlist',
-                        onTap: () => Navigator.pop(context),
-                      ),
-                      const Divider(color: KxColors.border),
-                      _DrawerItem(
-                        icon: Icons.tune_rounded,
-                        label: 'Settings',
-                        onTap: () => Navigator.pop(context),
-                      ),
-                      _DrawerItem(
-                        icon: Icons.info_outline_rounded,
-                        label: 'About',
-                        onTap: () => Navigator.pop(context),
+                      _MenuSection(
+                        title: 'SETTINGS',
+                        items: [
+                          _DrawerItem(
+                            icon: Icons.tune_rounded,
+                            label: 'Settings',
+                            onTap: () => Navigator.pop(context),
+                          ),
+                          _DrawerItem(
+                            icon: Icons.info_outline_rounded,
+                            label: 'About',
+                            onTap: () => Navigator.pop(context),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
                 // Logout button at bottom
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
                   child: SizedBox(
                     width: double.infinity,
+                    height: 48,
                     child: Material(
                       color: Colors.transparent,
                       child: InkWell(
@@ -130,22 +172,33 @@ class KxDrawer extends StatelessWidget {
                           Navigator.pop(context);
                           _confirmLogout(context);
                         },
-                        borderRadius: BorderRadius.circular(10),
-                        child: GlassCard(
-                          radius: 10,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          gradient: LinearGradient(
-                            colors: [
-                              KxColors.warn.withValues(alpha: 0.2),
-                              KxColors.warn.withValues(alpha: 0.1),
-                            ],
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                KxColors.warn.withValues(alpha: 0.25),
+                                KxColors.warn.withValues(alpha: 0.15),
+                              ],
+                            ),
+                            border: Border.all(
+                              color: KxColors.warn.withValues(alpha: 0.4),
+                              width: 1.5,
+                            ),
+                            borderRadius: BorderRadius.circular(12),
                           ),
+                          alignment: Alignment.center,
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(Icons.logout_rounded, color: KxColors.warn, size: 20),
-                              const SizedBox(width: 8),
-                              Text('Logout', style: KxText.body(14, weight: FontWeight.w600, color: KxColors.warn)),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Logout',
+                                style: KxText.body(15, weight: FontWeight.w700, color: KxColors.warn),
+                              ),
                             ],
                           ),
                         ),
@@ -158,6 +211,30 @@ class KxDrawer extends StatelessWidget {
           },
         ),
       ),
+    );
+  }
+}
+
+class _MenuSection extends StatelessWidget {
+  const _MenuSection({required this.title, required this.items});
+
+  final String title;
+  final List<Widget> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+          child: Text(
+            title,
+            style: KxText.label(11, color: KxColors.cyan).copyWith(letterSpacing: 1.5),
+          ),
+        ),
+        ...items,
+      ],
     );
   }
 }
@@ -177,12 +254,28 @@ class _DrawerItem extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(10),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
             children: [
-              Icon(icon, color: KxColors.textDim, size: 22),
-              const SizedBox(width: 12),
-              Text(label, style: KxText.body(14)),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  color: KxColors.cyan.withValues(alpha: 0.1),
+                ),
+                alignment: Alignment.center,
+                child: Icon(icon, color: KxColors.cyan, size: 20),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(label, style: KxText.body(15, weight: FontWeight.w500)),
+              ),
+              Icon(
+                Icons.arrow_forward_ios_rounded,
+                size: 14,
+                color: KxColors.textMuted,
+              ),
             ],
           ),
         ),
