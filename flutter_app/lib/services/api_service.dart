@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../config.dart';
 import '../models/coin.dart';
+import '../models/user.dart';
 
 class ApiException implements Exception {
   ApiException(this.message);
@@ -65,15 +66,22 @@ class ApiService {
 
   final http.Client _client;
   final String baseUrl;
+  String? _authToken;
 
-  Future<dynamic> _send(String method, String path, [Map<String, String>? query]) async {
+  void setAuthToken(String? token) => _authToken = token;
+
+  Future<dynamic> _send(String method, String path, [Map<String, String>? query, String? jsonBody]) async {
     final uri = Uri.parse('$baseUrl$path').replace(queryParameters: query);
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      if (_authToken != null) 'Authorization': 'Bearer $_authToken',
+    };
     final http.Response resp;
     try {
       final request = switch (method) {
-        'POST' => _client.post(uri),
-        'DELETE' => _client.delete(uri),
-        _ => _client.get(uri),
+        'POST' => _client.post(uri, headers: headers, body: jsonBody),
+        'DELETE' => _client.delete(uri, headers: headers),
+        _ => _client.get(uri, headers: headers),
       };
       resp = await request.timeout(const Duration(seconds: 15));
     } on TimeoutException {
@@ -107,6 +115,25 @@ class ApiService {
 
   static List<Coin> _coins(dynamic data) =>
       [for (final c in data as List) Coin.fromJson(c as Map<String, dynamic>)];
+
+  Future<AuthResponse> signup(String username, String password, [String? email]) async {
+    final body = jsonEncode({
+      'username': username,
+      'password': password,
+      if (email != null) 'email': email,
+    });
+    final result = await _send('POST', '/api/auth/signup', null, body);
+    return AuthResponse.fromJson(result as Map<String, dynamic>);
+  }
+
+  Future<AuthResponse> login(String username, String password) async {
+    final body = jsonEncode({
+      'username': username,
+      'password': password,
+    });
+    final result = await _send('POST', '/api/auth/login', null, body);
+    return AuthResponse.fromJson(result as Map<String, dynamic>);
+  }
 
   Future<ApiResult<List<Coin>>> getCoins({
     String search = '',

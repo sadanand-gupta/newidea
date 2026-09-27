@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:provider/provider.dart';
 
+import '../state/auth_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
 import '../widgets/kx_background.dart';
@@ -46,19 +48,11 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   void _goHome() {
     if (_navigated || !mounted) return;
     _navigated = true;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder<void>(
-        transitionDuration: const Duration(milliseconds: 700),
-        reverseTransitionDuration: const Duration(milliseconds: 300),
-        pageBuilder: (_, __, ___) => const HomeShell(),
-        transitionsBuilder: (_, animation, secondaryAnimation, child) => FadeThroughTransition(
-          animation: animation,
-          secondaryAnimation: secondaryAnimation,
-          fillColor: KxColors.bg,
-          child: child,
-        ),
-      ),
-    );
+
+    final auth = context.read<AuthProvider>();
+    final destination = auth.isAuthenticated ? '/home' : '/login';
+
+    Navigator.of(context).pushReplacementNamed(destination);
   }
 
   @override

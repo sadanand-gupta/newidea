@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:kryptox_backend/coingecko.dart';
 import 'package:kryptox_backend/mock_data.dart';
+import 'package:kryptox_backend/user.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
@@ -18,6 +19,7 @@ import 'package:shelf_router/shelf_router.dart';
 final _env = Platform.environment;
 final _api = CoinGecko(apiKey: _env['COINGECKO_API_KEY'], mockOnly: _env['USE_MOCK'] == '1');
 final _watchlistFile = File('watchlist.json');
+final _userStore = UserStore(file: File('users.json'));
 
 Response _json(Object? body, {int status = 200}) => Response(
       status,
@@ -200,6 +202,79 @@ Response _removeFromWatchlist(Request req, String id) {
   return _json({'ids': ids});
 }
 
+// --- Auth endpoints ---------------------------------------------------------
+
+Future<Response> _signup(Request req) async {
+  if (req.method != 'POST') return _error(405, 'Method not allowed');
+
+  final body = await req.readAsString();
+  late Map<String, dynamic> data;
+  try {
+    data = jsonDecode(body) as Map<String, dynamic>;
+  } catch (_) {
+    return _error(400, 'Invalid JSON');
+  }
+
+  final username = data['username'] as String?;
+  final password = data['password'] as String?;
+  final email = data['email'] as String?;
+
+  if (username == null || username.isEmpty) return _error(400, 'Username required');
+  if (username.length < 3) return _error(400, 'Username must be 3+ characters');
+  if (password == null || password.isEmpty) return _error(400, 'Password required');
+  if (password.length < 6) return _error(400, 'Password must be 6+ characters');
+
+  final user = _userStore.signup(username, password, email);
+  if (user == null) return _error(400, 'Username already taken');
+
+  final token = _userStore.createToken(username);
+  return _json({'user': user.toPublic(), 'token': token});
+}
+
+Future<Response> _login(Request req) async {
+  if (req.method != 'POST') return _error(405, 'Method not allowed');
+
+  final body = await req.readAsString();
+  late Map<String, dynamic> data;
+  try {
+    data = jsonDecode(body) as Map<String, dynamic>;
+  } catch (_) {
+    return _error(400, 'Invalid JSON');
+  }
+
+  final username = data['username'] as String?;
+  final password = data['password'] as String?;
+
+  if (username == null || username.isEmpty) return _error(400, 'Username required');
+  if (password == null || password.isEmpty) return _error(400, 'Password required');
+
+  final user = _userStore.login(username, password);
+  if (user == null) return _error(401, 'Invalid credentials');
+
+  final token = _userStore.createToken(username);
+  return _json({'user': user.toPublic(), 'token': token});
+}
+
+Future<Response> _profile(Request req) async {
+  final auth = req.headers['authorization'];
+  if (auth == null || !auth.startsWith('Bearer ')) return _error(401, 'Missing or invalid token');
+
+  final token = auth.substring(7);
+  final user = _userStore.validateToken(token);
+  if (user == null) return _error(401, 'Invalid or expired token');
+
+  return _json({'user': user.toPublic()});
+}
+
+Future<Response> _logout(Request req) async {
+  final auth = req.headers['authorization'];
+  if (auth == null || !auth.startsWith('Bearer ')) return _error(401, 'Missing or invalid token');
+
+  final token = auth.substring(7);
+  _userStore.revokeToken(token);
+  return _json({'success': true});
+}
+
 // --- Wiring ------------------------------------------------------------------
 
 Middleware _cors() {
@@ -216,8 +291,16 @@ Middleware _cors() {
 }
 
 Future<void> main() async {
+  _userStore.load();
+
   final router = Router()
     ..get('/api/health', (Request _) => _json({'status': 'ok', 'mock_mode': _api.mockOnly}))
+    // Auth routes
+    ..post('/api/auth/signup', _signup)
+    ..post('/api/auth/login', _login)
+    ..get('/api/auth/profile', _profile)
+    ..post('/api/auth/logout', _logout)
+    // Crypto routes
     ..get('/api/coins', _listCoins)
     ..get('/api/coins/<id>', _coinDetail)
     ..get('/api/coins/<id>/chart', _coinChart)

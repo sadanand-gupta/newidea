@@ -10,6 +10,7 @@ class AppConfig {
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       return 'http://10.0.2.2:8080';
     }
+    // Use localhost for web/desktop, or your machine's IP for physical devices
     return 'http://localhost:8080';
   }
 }

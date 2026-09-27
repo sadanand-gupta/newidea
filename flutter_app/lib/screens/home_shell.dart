@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../widgets/controls.dart';
 import '../widgets/kx_background.dart';
+import '../widgets/kx_drawer.dart';
 import 'coin_list_screen.dart';
 import 'market_stats_screen.dart';
 import 'watchlist_screen.dart';
@@ -57,6 +58,7 @@ class _HomeShellState extends State<HomeShell> with SingleTickerProviderStateMix
         child: Scaffold(
           backgroundColor: Colors.transparent,
           extendBody: true,
+          drawer: const KxDrawer(),
           body: FadeTransition(
             opacity: _opacity,
             child: SlideTransition(

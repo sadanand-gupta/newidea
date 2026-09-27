@@ -2,8 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import 'screens/home_screen.dart';
+import 'screens/login_screen.dart';
+import 'screens/profile_screen.dart';
 import 'screens/splash_screen.dart';
 import 'services/api_service.dart';
+import 'state/auth_provider.dart';
 import 'state/watchlist_provider.dart';
 import 'theme/app_theme.dart';
 
@@ -18,16 +22,20 @@ const kxOverlayStyle = SystemUiOverlayStyle(
   systemNavigationBarContrastEnforced: false,
 );
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(kxOverlayStyle);
 
   final api = ApiService();
+  final auth = AuthProvider(api);
+  await auth.initialize();
+
   runApp(
     MultiProvider(
       providers: [
         Provider<ApiService>.value(value: api),
+        ChangeNotifierProvider<AuthProvider>.value(value: auth),
         ChangeNotifierProvider(create: (_) => WatchlistProvider(api)..load()),
       ],
       child: const KryptoXApp(),
@@ -48,7 +56,13 @@ class KryptoXApp extends StatelessWidget {
         value: kxOverlayStyle,
         child: child ?? const SizedBox.shrink(),
       ),
-      home: const SplashScreen(),
+      routes: {
+        '/login': (_) => const LoginScreen(),
+        '/home': (_) => const HomeScreen(),
+        '/profile': (_) => const ProfileScreen(),
+        '/': (_) => const SplashScreen(),
+      },
+      initialRoute: '/',
     );
   }
 }
