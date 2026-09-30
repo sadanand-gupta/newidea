@@ -49,7 +49,8 @@ class GlassCard extends StatelessWidget {
     content = DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: shape,
-        gradient: gradient ??
+        gradient:
+            gradient ??
             LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -143,9 +144,13 @@ class SectionHeader extends StatelessWidget {
             decoration: BoxDecoration(gradient: KxColors.brandGradient, borderRadius: BorderRadius.circular(2)),
           ),
           const SizedBox(width: 8),
-          Text(title.toUpperCase(), style: KxText.label(12)),
-          const Spacer(),
-          if (trailing != null) trailing!,
+          Expanded(
+            child: Semantics(
+              header: true,
+              child: Text(title.toUpperCase(), style: KxText.label(12), maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+          ),
+          if (trailing != null) ...[const SizedBox(width: 8), trailing!],
         ],
       ),
     );

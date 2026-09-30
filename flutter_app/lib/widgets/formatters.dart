@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 String _groupThousands(String s) {
   final negative = s.startsWith('-');
   if (negative) s = s.substring(1);
@@ -8,13 +10,11 @@ String _groupThousands(String s) {
 
 int priceDecimals(double v) {
   final abs = v.abs();
-  return abs >= 1
-      ? 2
-      : abs >= 0.01
-          ? 4
-          : abs >= 0.0001
-              ? 6
-              : 8;
+  if (abs == 0 || !abs.isFinite || abs >= 1) return 2;
+  if (abs >= 0.01) return 4;
+  if (abs >= 0.0001) return 6;
+  // Micro-cap prices: keep 4 significant digits instead of rounding to $0.00000000.
+  return math.min(-(math.log(abs) / math.ln10).floor() + 3, 14);
 }
 
 /// $64,250.12 · $0.5850 · $0.00001780 — more decimals for smaller prices.

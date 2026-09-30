@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 
 import '../models/coin.dart';
 import '../services/api_service.dart';
 import '../state/loadable.dart';
+import '../state/watchlist_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/controls.dart';
 import '../widgets/formatters.dart';
@@ -13,6 +17,9 @@ import '../widgets/kx_background.dart';
 import '../widgets/market_widgets.dart';
 import '../widgets/price_chart.dart';
 import '../widgets/state_views.dart';
+
+/// Readable column width on tablets, desktop and wide web windows.
+const _maxContentWidth = 760.0;
 
 const _ranges = [1, 7, 30, 90, 365];
 const _rangeLabels = {1: '24H', 7: '7D', 30: '30D', 90: '90D', 365: '1Y'};
@@ -57,6 +64,10 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
   final _detail = Loadable<CoinDetail>();
   final _chart = Loadable<_ChartData>();
 
+  /// Last good series per range, so flipping back to a range is instant and
+  /// a failed refresh never blanks a chart the user already saw.
+  final _chartCache = <int, _ChartData>{};
+
   /// Point under the finger while the chart is being scrubbed.
   final _scrub = ValueNotifier<PricePoint?>(null);
   int _days = 7;
@@ -85,7 +96,9 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
     final api = _api;
     return _chart.load(() async {
       final result = await api.getChart(widget.coinId, days);
-      return ApiResult(_ChartData(days, result.data), result.source, result.updatedAt);
+      final data = _ChartData(days, result.data);
+      _chartCache[days] = data;
+      return ApiResult(data, result.source, result.updatedAt);
     });
   }
 
@@ -98,6 +111,14 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
     setState(() => _days = days);
     _scrub.value = null;
     _loadChart();
+  }
+
+  /// Series to draw for the selected range: fresh data, else the cached copy
+  /// for this range, else (while loading) the previous range's series.
+  _ChartData? get _visibleChart {
+    final live = _chart.data;
+    if (live != null && live.days == _days) return live;
+    return _chartCache[_days] ?? live;
   }
 
   void _onScrub(PricePoint? point) {
@@ -120,11 +141,16 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
               final coin = detail?.coin ?? widget.initial;
               return Column(
                 children: [
-                  _Header(
-                    coin: coin,
-                    coinId: widget.coinId,
-                    heroTag: widget.heroTag,
-                    source: _detail.source,
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+                      child: _Header(
+                        coin: coin,
+                        coinId: widget.coinId,
+                        heroTag: widget.heroTag,
+                        source: _detail.source,
+                      ),
+                    ),
                   ),
                   Expanded(child: _buildBody(coin, detail)),
                 ],
@@ -231,7 +257,12 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.fromLTRB(16, 6, 16, 32 + MediaQuery.paddingOf(context).bottom),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: sections),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: sections),
+          ),
+        ),
       ),
     );
   }
@@ -243,7 +274,7 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
       listenable: Listenable.merge([_scrub, _chart]),
       builder: (context, _) {
         final scrub = _scrub.value;
-        final data = _chart.data;
+        final data = _visibleChart;
         final current = (data != null && data.days == _days) ? data : null;
 
         // Change for the selected range: chart first→last, then the matching
@@ -298,11 +329,14 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
             child: ListenableBuilder(listenable: _chart, builder: (context, _) => _chartBody()),
           ),
           const SizedBox(height: 14),
-          KxSegmented<int>(
-            options: _ranges,
-            selected: _days,
-            labelOf: (d) => _rangeLabels[d]!,
-            onSelected: _selectRange,
+          Semantics(
+            label: 'Chart range, ${_rangeLong[_days]} selected',
+            child: KxSegmented<int>(
+              options: _ranges,
+              selected: _days,
+              labelOf: (d) => _rangeLabels[d]!,
+              onSelected: _selectRange,
+            ),
           ),
         ],
       ),
@@ -310,12 +344,16 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
   }
 
   Widget _chartBody() {
-    final data = _chart.data;
+    final data = _visibleChart;
     final error = _chart.error;
     final stale = data == null || data.days != _days;
 
     if (error != null && stale) {
-      return _InlineError(message: 'Chart unavailable: $error', onRetry: _loadChart);
+      return _InlineError(
+        message: "Couldn't load the ${_rangeLabels[_days]} chart",
+        detail: '$error',
+        onRetry: _loadChart,
+      );
     }
     if (data == null) return const _ChartSkeleton();
 
@@ -330,7 +368,9 @@ class _CoinDetailScreenState extends State<CoinDetailScreen> {
           child: IgnorePointer(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
-              child: _chart.loading
+              // Only dim the chart when it shows another range; refreshing a
+              // range we already have (cached) happens silently.
+              child: _chart.loading && stale
                   ? _ChartLoadingOverlay(key: const ValueKey('loading'), label: _rangeLabels[_days]!)
                   : const SizedBox.shrink(key: ValueKey('idle')),
             ),
@@ -357,7 +397,7 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final coin = this.coin;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
       child: Row(
         children: [
           _GlassIconButton(
@@ -395,7 +435,8 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
-          WatchlistStar(coinId: coinId, size: 24),
+          const SizedBox(width: 4),
+          _WatchButton(coinId: coinId, coinName: coin?.name),
         ],
       ),
     );
@@ -411,24 +452,108 @@ class _GlassIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          splashColor: KxColors.cyan.withValues(alpha: 0.12),
-          child: Ink(
-            width: 40,
-            height: 40,
+    return Semantics(
+      button: true,
+      label: tooltip,
+      excludeSemantics: true,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            onTap: onTap,
+            customBorder: const CircleBorder(),
+            splashColor: KxColors.cyan.withValues(alpha: 0.12),
+            child: Ink(
+              width: 44,
+              height: 44,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: Colors.white.withValues(alpha: 0.06),
               border: Border.all(color: KxColors.border),
             ),
-            child: Icon(icon, size: 16, color: KxColors.text),
+              child: Icon(icon, size: 16, color: KxColors.text),
+            ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Watchlist toggle with explicit feedback: the star animates, and a snackbar
+/// confirms the change with an Undo (or explains a failure). Taps are ignored
+/// while a toggle is in flight so rapid taps can't desync the server.
+class _WatchButton extends StatefulWidget {
+  const _WatchButton({required this.coinId, required this.coinName});
+
+  final String coinId;
+  final String? coinName;
+
+  @override
+  State<_WatchButton> createState() => _WatchButtonState();
+}
+
+class _WatchButtonState extends State<_WatchButton> {
+  bool _busy = false;
+
+  Future<void> _toggle({bool isUndo = false}) async {
+    if (_busy) return;
+    final provider = context.read<WatchlistProvider>();
+    final messenger = ScaffoldMessenger.of(context);
+    final adding = !provider.contains(widget.coinId);
+    final name = widget.coinName ?? 'Coin';
+    HapticFeedback.lightImpact();
+    setState(() => _busy = true);
+    final error = await provider.toggle(widget.coinId);
+    if (mounted) setState(() => _busy = false);
+
+    messenger.hideCurrentSnackBar();
+    if (error != null) {
+      messenger.showSnackBar(SnackBar(content: Text(error)));
+      return;
+    }
+    if (isUndo) return;
+    messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 3),
+        content: Text(adding ? '$name added to your watchlist' : '$name removed from your watchlist'),
+        action: SnackBarAction(
+          label: 'Undo',
+          textColor: KxColors.cyan,
+          onPressed: () {
+            if (mounted) {
+              _toggle(isUndo: true);
+            } else {
+              // Page was closed: still honour the undo.
+              provider.toggle(widget.coinId);
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final watched = context.select<WatchlistProvider, bool>((w) => w.contains(widget.coinId));
+    return Semantics(
+      toggled: watched,
+      child: IconButton(
+        tooltip: watched ? 'Remove from watchlist' : 'Add to watchlist',
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        onPressed: _busy ? null : _toggle,
+        icon: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 350),
+          transitionBuilder: (child, anim) => ScaleTransition(
+            scale: CurvedAnimation(parent: anim, curve: Curves.elasticOut),
+            child: child,
+          ),
+          child: watched
+              ? Icon(Icons.star_rounded, key: const ValueKey(true), color: KxColors.warn, size: 26)
+                  .animate(key: const ValueKey('glow'))
+                  .shimmer(duration: 900.ms, color: Colors.white)
+              : const Icon(Icons.star_outline_rounded, key: ValueKey(false), color: KxColors.textDim, size: 26),
         ),
       ),
     );
@@ -516,11 +641,7 @@ class _PriceBlock extends StatelessWidget {
                       child: Text('HISTORICAL', style: KxText.label(9, color: KxColors.cyan)),
                     )
                   : updatedAt != null
-                      ? Text(
-                          'Updated ${timeAgo(updatedAt!)}',
-                          key: const ValueKey('updated'),
-                          style: KxText.mono(10, color: KxColors.textMuted),
-                        )
+                      ? _UpdatedAgo(key: const ValueKey('updated'), time: updatedAt!)
                       : const SizedBox.shrink(key: ValueKey('none')),
             ),
           ],
@@ -530,10 +651,13 @@ class _PriceBlock extends StatelessWidget {
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
-          child: Transform.translate(
-            offset: const Offset(-4, 0), // AnimatedPrice has 4px inner padding
-            child: AnimatedPrice(value: price, style: priceStyle, flash: !scrubbing),
-          ),
+          child: _isMicroPrice(price)
+              // AnimatedPrice caps at 8 decimals, which would read $0.00000000.
+              ? Text(formatChartPrice(price), maxLines: 1, style: priceStyle)
+              : Transform.translate(
+                  offset: const Offset(-4, 0), // AnimatedPrice has 4px inner padding
+                  child: AnimatedPrice(value: price, style: priceStyle, flash: !scrubbing),
+                ),
         ),
         const SizedBox(height: 8),
         Row(
@@ -559,6 +683,47 @@ class _PriceBlock extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+bool _isMicroPrice(double? v) => v != null && v != 0 && v.abs() < 0.000001;
+
+/// "Updated 2m ago" that keeps itself current instead of freezing at the
+/// value computed when the page was built.
+class _UpdatedAgo extends StatefulWidget {
+  const _UpdatedAgo({super.key, required this.time});
+
+  final DateTime time;
+
+  @override
+  State<_UpdatedAgo> createState() => _UpdatedAgoState();
+}
+
+class _UpdatedAgoState extends State<_UpdatedAgo> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      'Updated ${timeAgo(widget.time)}',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: KxText.mono(10, color: KxColors.textDim),
     );
   }
 }
@@ -652,25 +817,31 @@ class _MiniRetry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        onTap: onRetry,
-        borderRadius: BorderRadius.circular(8),
-        child: Ink(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: KxColors.down.withValues(alpha: 0.14),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: KxColors.down.withValues(alpha: 0.4)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.refresh_rounded, size: 12, color: KxColors.down),
-              const SizedBox(width: 4),
-              Text('Update failed · Retry', style: KxText.mono(10, color: KxColors.down)),
-            ],
+    return Semantics(
+      button: true,
+      label: 'Chart update failed. Retry',
+      excludeSemantics: true,
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          onTap: onRetry,
+          borderRadius: BorderRadius.circular(10),
+          child: Ink(
+            height: 36,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: KxColors.bgElevated.withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: KxColors.down.withValues(alpha: 0.45)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.refresh_rounded, size: 14, color: KxColors.down),
+                const SizedBox(width: 6),
+                Text('Update failed · Retry', style: KxText.mono(11, weight: FontWeight.w600, color: KxColors.down)),
+              ],
+            ),
           ),
         ),
       ),
@@ -692,14 +863,28 @@ class _RangeBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = high > low ? ((current - low) / (high - low)).clamp(0.0, 1.0).toDouble() : 0.5;
     const marker = 16.0;
-    return Column(
+    final lowText = formatChartPrice(low), highText = formatChartPrice(high);
+    return Semantics(
+      container: true,
+      excludeSemantics: true,
+      label: '24 hour range: low $lowText, high $highText. '
+          'Current price is ${(t * 100).round()} percent of the way from low to high.',
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
-            Text('24H RANGE', style: KxText.label(11)),
-            const Spacer(),
-            Text('${(t * 100).round()}% from low', style: KxText.mono(11, color: KxColors.textDim)),
+            Flexible(child: Text('24H RANGE', maxLines: 1, overflow: TextOverflow.ellipsis, style: KxText.label(11))),
+            const SizedBox(width: 12),
+            Flexible(
+              child: Text(
+                '${(t * 100).round()}% from low',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.end,
+                style: KxText.mono(11, color: KxColors.textDim),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 14),
@@ -755,14 +940,15 @@ class _RangeBar extends StatelessWidget {
         const SizedBox(height: 12),
         Row(
           children: [
-            Expanded(child: _RangeLabel(label: 'LOW', value: formatPrice(low), color: KxColors.down)),
+            Expanded(child: _RangeLabel(label: 'LOW', value: lowText, color: KxColors.down)),
             const SizedBox(width: 12),
             Expanded(
-              child: _RangeLabel(label: 'HIGH', value: formatPrice(high), color: KxColors.up, end: true),
+              child: _RangeLabel(label: 'HIGH', value: highText, color: KxColors.up, end: true),
             ),
           ],
         ),
       ],
+      ),
     );
   }
 }
@@ -897,10 +1083,10 @@ class _MarketStatsGrid extends StatelessWidget {
       ('24h volume', formatCompact(c.volume), null),
       ('Fully diluted val.', formatCompact(detail.fullyDilutedValuation), null),
       ('Vol / Mkt cap', volToCap, null),
-      ('All-time high', formatPrice(detail.ath), null),
+      ('All-time high', formatChartPrice(detail.ath), null),
       ('From ATH', formatPercent(detail.athChange), KxColors.change(detail.athChange)),
       ('ATH date', formatDate(detail.athDate), null),
-      ('All-time low', formatPrice(detail.atl), null),
+      ('All-time low', formatChartPrice(detail.atl), null),
       ('From ATL', formatPercent(fromAtl), KxColors.change(fromAtl)),
       ('ATL date', formatDate(detail.atlDate), null),
     ];
@@ -976,7 +1162,9 @@ class _SupplyCard extends StatelessWidget {
     final max = coin.maxSupply;
     final ratio = (circ != null && max != null && max > 0) ? (circ / max).clamp(0.0, 1.0).toDouble() : null;
 
-    Widget row(String label, double? value, Color dot) => Padding(
+    final unit = coin.symbol.isEmpty ? '' : ' ${coin.symbol}';
+
+    Widget row(String label, double? value, Color dot, {String missing = '—'}) => Padding(
           padding: const EdgeInsets.symmetric(vertical: 5),
           child: Row(
             children: [
@@ -990,7 +1178,9 @@ class _SupplyCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              Text(label, style: KxText.body(13, color: KxColors.textDim)),
+              Flexible(
+                child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: KxText.body(13, color: KxColors.textDim)),
+              ),
               const SizedBox(width: 12),
               Expanded(
                 child: Align(
@@ -999,7 +1189,7 @@ class _SupplyCard extends StatelessWidget {
                     fit: BoxFit.scaleDown,
                     alignment: Alignment.centerRight,
                     child: Text(
-                      value == null ? '∞ / unknown' : '${formatNumber(value)} ${coin.symbol}',
+                      value == null ? missing : '${formatNumber(value)}$unit',
                       maxLines: 1,
                       style: KxText.mono(13, weight: FontWeight.w600, color: value == null ? KxColors.textMuted : KxColors.text),
                     ),
@@ -1016,13 +1206,18 @@ class _SupplyCard extends StatelessWidget {
         children: [
           row('Circulating', circ, KxColors.cyan),
           row('Total', coin.totalSupply, KxColors.violet),
-          row('Max', max, KxColors.magenta),
+          // CoinGecko reports max_supply as null for uncapped coins (e.g. ETH).
+          row('Max', max, KxColors.magenta, missing: '∞  No fixed cap'),
           const SizedBox(height: 14),
           if (ratio != null)
             _SupplyProgress(ratio: ratio)
           else
-            Text('No max supply cap: circulation progress unavailable',
-                style: KxText.body(12, color: KxColors.textMuted)),
+            Text(
+              circ == null
+                  ? 'Circulating supply not reported.'
+                  : 'No fixed maximum supply, so there is no circulation progress to show.',
+              style: KxText.body(12, color: KxColors.textDim),
+            ),
         ],
       ),
     );
@@ -1118,7 +1313,7 @@ class _AboutCard extends StatelessWidget {
           if (homepage != null) ...[
             const SizedBox(height: 16),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 const Padding(
                   padding: EdgeInsets.only(top: 1),
@@ -1126,7 +1321,26 @@ class _AboutCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: SelectableText(homepage, style: KxText.mono(12, color: KxColors.cyan)),
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: SelectableText(homepage, style: KxText.mono(12, color: KxColors.cyan)),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'Copy website link',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.copy_rounded, size: 16, color: KxColors.textDim),
+                  onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    await Clipboard.setData(ClipboardData(text: homepage));
+                    HapticFeedback.selectionClick();
+                    messenger
+                      ..hideCurrentSnackBar()
+                      ..showSnackBar(const SnackBar(content: Text('Website link copied')));
+                  },
                 ),
               ],
             ),
@@ -1218,12 +1432,17 @@ class _ExpandableTextState extends State<_ExpandableText> {
               ),
             ),
             if (overflows) ...[
-              const SizedBox(height: 8),
-              InkWell(
+              const SizedBox(height: 2),
+              Semantics(
+                button: true,
+                expanded: _expanded,
+                child: InkWell(
                 onTap: () => setState(() => _expanded = !_expanded),
                 borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 44),
+                  child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 2),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -1240,7 +1459,9 @@ class _ExpandableTextState extends State<_ExpandableText> {
                       ),
                     ],
                   ),
+                  ),
                 ),
+              ),
               ),
             ],
           ],
@@ -1322,15 +1543,18 @@ class _DetailsSkeleton extends StatelessWidget {
 }
 
 class _InlineError extends StatelessWidget {
-  const _InlineError({required this.message, required this.onRetry});
+  const _InlineError({required this.message, required this.onRetry, this.detail});
 
   final String message;
+  final String? detail;
   final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
+    // Scrollable so it can't overflow the fixed-height chart slot at large
+    // text scales.
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(8),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1353,8 +1577,18 @@ class _InlineError extends StatelessWidget {
               textAlign: TextAlign.center,
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: KxText.body(13, color: KxColors.textDim),
+              style: KxText.body(13, weight: FontWeight.w600, color: KxColors.text),
             ),
+            if (detail != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                detail!,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: KxText.body(12, color: KxColors.textDim),
+              ),
+            ],
             const SizedBox(height: 12),
             GradientButton(label: 'Retry', icon: Icons.refresh_rounded, onPressed: onRetry),
           ],

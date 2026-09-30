@@ -1,18 +1,15 @@
 import 'dart:math' as math;
 
-import 'package:animations/animations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:provider/provider.dart';
 
-import '../state/auth_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass.dart';
 import '../widgets/kx_background.dart';
-import 'home_shell.dart';
 
 /// Branded ~1.8s intro: a hexagon mark with a sweeping neon ring and a
-/// self-drawing "X", a letter-by-letter wordmark and a sync progress line.
+/// self-drawing "X", a letter-by-letter wordmark and a progress line.
+/// Tapping anywhere skips it; with "reduce motion" on it is much shorter.
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -22,19 +19,33 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
   static const _duration = Duration(milliseconds: 1800);
+  static const _reducedDuration = Duration(milliseconds: 500);
 
   late final AnimationController _intro = AnimationController(vsync: this, duration: _duration);
   late final AnimationController _pulse =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
+  bool _started = false;
   bool _navigated = false;
 
   @override
   void initState() {
     super.initState();
-    _pulse.repeat(reverse: true);
     _intro.addStatusListener((status) {
       if (status == AnimationStatus.completed) _goHome();
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // MediaQuery isn't readable in initState; start the intro on first build.
+    if (_started) return;
+    _started = true;
+    if (MediaQuery.of(context).disableAnimations) {
+      _intro.duration = _reducedDuration;
+    } else {
+      _pulse.repeat(reverse: true);
+    }
     _intro.forward();
   }
 
@@ -48,11 +59,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
   void _goHome() {
     if (_navigated || !mounted) return;
     _navigated = true;
-
-    final auth = context.read<AuthProvider>();
-    final destination = auth.isAuthenticated ? '/home' : '/login';
-
-    Navigator.of(context).pushReplacementNamed(destination);
+    Navigator.of(context).pushReplacementNamed('/home');
   }
 
   @override
@@ -61,52 +68,66 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     return KxBackground(
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: Stack(
-          children: [
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Semantics(
-                      label: 'KryptoX',
-                      image: true,
-                      child: RepaintBoundary(
-                        child: AnimatedBuilder(
-                          animation: Listenable.merge([_intro, _pulse]),
-                          builder: (context, _) => CustomPaint(
-                            size: const Size.square(148),
-                            painter: _LogoPainter(t: _intro.value, pulse: _pulse.value),
-                          ),
+        body: Semantics(
+          label: 'KryptoX is loading. Double tap to skip.',
+          button: true,
+          onTap: _goHome,
+          excludeSemantics: true,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _goHome,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: SafeArea(
+                    // Leave room for the progress line so the two never overlap.
+                    minimum: const EdgeInsets.fromLTRB(24, 24, 24, 110),
+                    child: Center(
+                      // Scales the whole lockup down on short (landscape) or
+                      // narrow screens and at large text sizes instead of overflowing.
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            RepaintBoundary(
+                              child: AnimatedBuilder(
+                                animation: Listenable.merge([_intro, _pulse]),
+                                builder: (context, _) => CustomPaint(
+                                  size: const Size.square(148),
+                                  painter: _LogoPainter(t: _intro.value, pulse: _pulse.value),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 28),
+                            const _Wordmark(),
+                            const SizedBox(height: 12),
+                            Text(
+                              'CRYPTO MARKET INTELLIGENCE',
+                              textAlign: TextAlign.center,
+                              style: KxText.label(11, color: KxColors.textDim).copyWith(letterSpacing: 3.2),
+                            )
+                                .animate(delay: 1050.ms)
+                                .fadeIn(duration: 500.ms)
+                                .slideY(begin: 0.4, end: 0, duration: 500.ms, curve: Curves.easeOutCubic),
+                          ],
                         ),
                       ),
                     ),
-                    const SizedBox(height: 28),
-                    const _Wordmark(),
-                    const SizedBox(height: 12),
-                    Text(
-                      'CRYPTO MARKET INTELLIGENCE',
-                      textAlign: TextAlign.center,
-                      style: KxText.label(11, color: KxColors.textDim).copyWith(letterSpacing: 3.2),
-                    )
-                        .animate(delay: 1050.ms)
-                        .fadeIn(duration: 500.ms)
-                        .slideY(begin: 0.4, end: 0, duration: 500.ms, curve: Curves.easeOutCubic),
-                  ],
+                  ),
                 ),
-              ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 56 + bottomPad,
+                  child: AnimatedBuilder(
+                    animation: _intro,
+                    builder: (context, _) => _SyncProgress(value: Curves.easeInOutCubic.transform(_intro.value)),
+                  ).animate().fadeIn(delay: 250.ms, duration: 400.ms),
+                ),
+              ],
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 56 + bottomPad,
-              child: AnimatedBuilder(
-                animation: _intro,
-                builder: (context, _) => _SyncProgress(value: Curves.easeInOutCubic.transform(_intro.value)),
-              ).animate().fadeIn(delay: 250.ms, duration: 400.ms),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -173,7 +194,7 @@ class _SyncProgress extends StatelessWidget {
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text('SYNCING MARKETS', style: KxText.label(10, color: KxColors.textMuted)),
+            Text('LOADING MARKETS', style: KxText.label(10, color: KxColors.textMuted)),
             const SizedBox(width: 10),
             SizedBox(
               width: 36,

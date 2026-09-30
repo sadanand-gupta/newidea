@@ -12,13 +12,10 @@ class LoadingView extends StatelessWidget {
   final ScrollPhysics physics;
 
   static Widget bar(double width, double height) => Container(
-        width: width,
-        height: height,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.07),
-          borderRadius: BorderRadius.circular(6),
-        ),
-      );
+    width: width,
+    height: height,
+    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.07), borderRadius: BorderRadius.circular(6)),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -28,33 +25,34 @@ class LoadingView extends StatelessWidget {
       itemCount: rows,
       itemBuilder: (_, i) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: GlassCard(
-          radius: 18,
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.07), shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [bar(60, 12), const SizedBox(height: 6), bar(90, 10)],
-              ),
-              const Spacer(),
-              bar(60, 22),
-              const SizedBox(width: 16),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [bar(70, 12), const SizedBox(height: 6), bar(46, 10)],
-              ),
-            ],
-          ),
-        )
-            .animate(onPlay: (c) => c.repeat())
-            .shimmer(duration: 1400.ms, delay: (i * 80).ms, color: KxColors.cyan.withValues(alpha: 0.12)),
+        child:
+            GlassCard(
+                  radius: 18,
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.07), shape: BoxShape.circle),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [bar(60, 12), const SizedBox(height: 6), bar(90, 10)],
+                      ),
+                      const Spacer(),
+                      bar(60, 22),
+                      const SizedBox(width: 16),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [bar(70, 12), const SizedBox(height: 6), bar(46, 10)],
+                      ),
+                    ],
+                  ),
+                )
+                .animate(onPlay: (c) => c.repeat())
+                .shimmer(duration: 1400.ms, delay: (i * 80).ms, color: KxColors.cyan.withValues(alpha: 0.12)),
       ),
     );
   }
@@ -80,7 +78,11 @@ class ErrorView extends StatelessWidget {
             const SizedBox(height: 24),
             Text('Connection lost', style: KxText.display(20)),
             const SizedBox(height: 8),
-            Text(message, textAlign: TextAlign.center, style: KxText.body(14, color: KxColors.textDim)),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: KxText.body(14, color: KxColors.textDim),
+            ),
             const SizedBox(height: 24),
             GradientButton(label: 'Retry', icon: Icons.refresh_rounded, onPressed: onRetry),
           ],
@@ -91,14 +93,7 @@ class ErrorView extends StatelessWidget {
 }
 
 class EmptyView extends StatelessWidget {
-  const EmptyView({
-    super.key,
-    required this.icon,
-    required this.title,
-    this.subtitle,
-    this.actionLabel,
-    this.onAction,
-  });
+  const EmptyView({super.key, required this.icon, required this.title, this.subtitle, this.actionLabel, this.onAction});
 
   final IconData icon;
   final String title;
@@ -121,7 +116,11 @@ class EmptyView extends StatelessWidget {
             Text(title, style: KxText.display(19), textAlign: TextAlign.center),
             if (subtitle != null) ...[
               const SizedBox(height: 8),
-              Text(subtitle!, style: KxText.body(14, color: KxColors.textDim), textAlign: TextAlign.center),
+              Text(
+                subtitle!,
+                style: KxText.body(14, color: KxColors.textDim),
+                textAlign: TextAlign.center,
+              ),
             ],
             if (actionLabel != null) ...[
               const SizedBox(height: 24),
@@ -183,7 +182,14 @@ class GradientButton extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (icon != null) ...[Icon(icon, size: 18, color: Colors.black), const SizedBox(width: 8)],
-                Text(label, style: KxText.body(14, weight: FontWeight.w700, color: Colors.black)),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: KxText.body(14, weight: FontWeight.w700, color: Colors.black),
+                  ),
+                ),
               ],
             ),
           ),
@@ -212,8 +218,12 @@ class RefreshErrorBanner extends StatelessWidget {
           const Icon(Icons.warning_amber_rounded, color: KxColors.down, size: 18),
           const SizedBox(width: 10),
           Expanded(
-            child: Text('Refresh failed: $message',
-                maxLines: 2, overflow: TextOverflow.ellipsis, style: KxText.body(12)),
+            child: Text(
+              'Refresh failed: $message',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: KxText.body(12),
+            ),
           ),
           TextButton(onPressed: onRetry, child: const Text('Retry')),
         ],

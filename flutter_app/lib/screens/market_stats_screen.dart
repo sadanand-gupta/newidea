@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
@@ -43,6 +44,15 @@ const _fallbackPalette = [
 const _dominanceSlices = 5;
 const _autoRefresh = Duration(seconds: 60);
 
+/// Content never stretches wider than this on desktop / web windows.
+const _maxContentWidth = 900.0;
+
+/// Above this content width, dominance and sentiment sit side by side.
+const _twoColumnBreakpoint = 720.0;
+
+/// Minimum interactive height (Material / WCAG touch-target guidance).
+const _minTap = 44.0;
+
 class MarketStatsScreen extends StatefulWidget {
   const MarketStatsScreen({super.key});
 
@@ -50,27 +60,89 @@ class MarketStatsScreen extends StatefulWidget {
   State<MarketStatsScreen> createState() => _MarketStatsScreenState();
 }
 
-class _MarketStatsScreenState extends State<MarketStatsScreen> {
+class _MarketStatsScreenState extends State<MarketStatsScreen> with WidgetsBindingObserver {
   final _stats = Loadable<GlobalStats>();
   Timer? _timer;
+  DateTime? _lastFetch;
+
+  /// False while this tab is hidden in the shell's IndexedStack or covered by a route.
+  ValueListenable<TickerModeData>? _tickerMode;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _reload();
-    _timer = Timer.periodic(_autoRefresh, (_) {
-      if (mounted && !_stats.loading) _reload();
-    });
+    _startAutoRefresh();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final notifier = TickerMode.getValuesNotifier(context);
+    if (!identical(notifier, _tickerMode)) {
+      _tickerMode?.removeListener(_onVisibilityChanged);
+      _tickerMode = notifier..addListener(_onVisibilityChanged);
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _tickerMode?.removeListener(_onVisibilityChanged);
     _timer?.cancel();
     _stats.dispose();
     super.dispose();
   }
 
-  Future<void> _reload() => _stats.load(() => context.read<ApiService>().getGlobalStats());
+  bool get _visible => _tickerMode?.value.enabled ?? true;
+
+  bool get _isStale {
+    final last = _lastFetch;
+    return last == null || DateTime.now().difference(last) >= _autoRefresh;
+  }
+
+  Future<void> _reload() {
+    final api = context.read<ApiService>();
+    return _stats.load(() async {
+      final result = await api.getGlobalStats();
+      _lastFetch = DateTime.now();
+      return result;
+    });
+  }
+
+  void _startAutoRefresh() {
+    _timer?.cancel();
+    _timer = Timer.periodic(_autoRefresh, (_) {
+      // Don't poll while the tab is off-screen; it catches up when shown again.
+      if (mounted && _visible && !_stats.loading) _reload();
+    });
+  }
+
+  void _stopAutoRefresh() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  /// Tab became visible again: refresh if the data went stale while hidden.
+  /// Deferred to after the frame because TickerMode flips during build.
+  void _onVisibilityChanged() {
+    if (!_visible) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _visible && _isStale && !_stats.loading) _reload();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startAutoRefresh();
+      if (_visible && _isStale && !_stats.loading) _reload();
+    } else if (state != AppLifecycleState.inactive) {
+      // paused / hidden / detached: no point polling in the background.
+      _stopAutoRefresh();
+    }
+  }
 
   void _open(Coin coin, String heroPrefix) => openCoin(context, coin, heroPrefix: heroPrefix);
 
@@ -99,21 +171,25 @@ class _MarketStatsScreenState extends State<MarketStatsScreen> {
                   ? Padding(
                       key: const ValueKey('error'),
                       padding: const EdgeInsets.only(bottom: 90),
-                      child: ErrorView(message: '${_stats.error}', onRetry: _reload),
+                      child: _MaxWidth(child: ErrorView(message: '${_stats.error}', onRetry: _reload)),
                     )
-                  : const LoadingView(key: ValueKey('loading'), rows: 6);
+                  : const _MaxWidth(key: ValueKey('loading'), child: LoadingView(rows: 6));
             } else {
               body = KeyedSubtree(key: const ValueKey('data'), child: _buildDashboard(stats));
             }
             return Column(
               children: [
-                _Header(
-                  eyebrow: 'OVERVIEW',
-                  title: 'Global Market',
-                  source: _stats.source,
-                  updatedAt: _stats.updatedAt,
+                _MaxWidth(
+                  child: _Header(
+                    eyebrow: 'OVERVIEW',
+                    title: 'Global Market',
+                    source: _stats.source,
+                    updatedAt: _stats.updatedAt,
+                    loading: _stats.loading,
+                    onRefresh: _reload,
+                  ),
                 ),
-                _LoadingLine(visible: _stats.loading && stats != null),
+                _MaxWidth(child: _LoadingLine(visible: _stats.loading && stats != null)),
                 Expanded(
                   child: Stack(
                     children: [
@@ -132,7 +208,10 @@ class _MarketStatsScreenState extends State<MarketStatsScreen> {
                           left: 16,
                           right: 16,
                           bottom: 104,
-                          child: RefreshErrorBanner(message: '${_stats.error}', onRetry: _reload),
+                          child: _MaxWidth(
+                            maxWidth: _maxContentWidth - 32,
+                            child: RefreshErrorBanner(message: '${_stats.error}', onRetry: _reload),
+                          ),
                         ),
                     ],
                   ),
@@ -146,6 +225,16 @@ class _MarketStatsScreenState extends State<MarketStatsScreen> {
   }
 
   Widget _buildDashboard(GlobalStats stats) {
+    Widget section(String title, Widget child, {Widget? trailing}) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [SectionHeader(title, trailing: trailing), child],
+        );
+
+    final dominance = stats.dominance.isEmpty
+        ? null
+        : section('Market-cap dominance', _DominanceCard(dominance: stats.dominance));
+    final sentiment = section('Sentiment', _SentimentCard(stats: stats), trailing: const _EstimateTag());
+
     return RefreshIndicator(
       onRefresh: _reload,
       color: KxColors.cyan,
@@ -153,47 +242,60 @@ class _MarketStatsScreenState extends State<MarketStatsScreen> {
       child: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.only(top: 6, bottom: 120),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _reveal(0, _pad(_HeroCard(stats: stats))),
-            const SizedBox(height: 18),
-            _reveal(
-              1,
-              _pad(Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [const SectionHeader('Key metrics'), _KpiGrid(stats: stats)],
-              )),
-            ),
-            if (stats.dominance.isNotEmpty) ...[
-              const SizedBox(height: 18),
-              _reveal(
-                2,
-                _pad(Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SectionHeader('Market-cap dominance'),
-                    _DominanceCard(dominance: stats.dominance),
-                  ],
-                )),
-              ),
-            ],
-            const SizedBox(height: 18),
-            _reveal(
-              3,
-              _pad(Column(
+        child: _MaxWidth(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final twoColumn = constraints.maxWidth >= _twoColumnBreakpoint;
+              return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SectionHeader('Market sentiment', trailing: _EstimateTag()),
-                  _SentimentCard(stats: stats),
+                  _reveal(0, _pad(_HeroCard(stats: stats))),
+                  const SizedBox(height: 18),
+                  _reveal(1, _pad(section('Key metrics', _KpiGrid(stats: stats)))),
+                  const SizedBox(height: 18),
+                  if (twoColumn && dominance != null)
+                    _reveal(
+                      2,
+                      _pad(Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(child: dominance),
+                          const SizedBox(width: 16),
+                          Expanded(child: sentiment),
+                        ],
+                      )),
+                    )
+                  else ...[
+                    if (dominance != null) ...[
+                      _reveal(2, _pad(dominance)),
+                      const SizedBox(height: 18),
+                    ],
+                    _reveal(3, _pad(sentiment)),
+                  ],
+                  const SizedBox(height: 18),
+                  _reveal(4, _TopMovers(stats: stats, onOpen: _open)),
                 ],
-              )),
-            ),
-            const SizedBox(height: 18),
-            _reveal(4, _TopMovers(stats: stats, onOpen: _open)),
-          ],
+              );
+            },
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// Centres [child] and caps its width so the dashboard stays readable on wide windows.
+class _MaxWidth extends StatelessWidget {
+  const _MaxWidth({super.key, required this.child, this.maxWidth = _maxContentWidth});
+
+  final Widget child;
+  final double maxWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(constraints: BoxConstraints(maxWidth: maxWidth), child: child),
     );
   }
 }
@@ -201,17 +303,26 @@ class _MarketStatsScreenState extends State<MarketStatsScreen> {
 // --- Header -----------------------------------------------------------------
 
 class _Header extends StatelessWidget {
-  const _Header({required this.eyebrow, required this.title, required this.source, required this.updatedAt});
+  const _Header({
+    required this.eyebrow,
+    required this.title,
+    required this.source,
+    required this.updatedAt,
+    required this.loading,
+    required this.onRefresh,
+  });
 
   final String eyebrow;
   final String title;
   final String? source;
   final DateTime? updatedAt;
+  final bool loading;
+  final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 16, 10),
+      padding: const EdgeInsets.fromLTRB(20, 14, 8, 10),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -219,25 +330,53 @@ class _Header extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(eyebrow, style: KxText.label(11, color: KxColors.cyan)),
+                Text(eyebrow, style: KxText.label(11, color: KxColors.cyan), maxLines: 1),
                 const SizedBox(height: 2),
-                GradientText(
-                  title,
-                  style: KxText.display(28),
+                // Scales down instead of wrapping on narrow phones / large text.
+                Semantics(
+                  header: true,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: GradientText(title, style: KxText.display(28)),
+                  ),
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               SourceBadge(source: source),
               if (updatedAt != null) ...[
                 const SizedBox(height: 6),
-                Text('updated ${formatTime(updatedAt!)}', style: KxText.mono(10, color: KxColors.textMuted)),
+                Text(
+                  'Updated ${formatTime(updatedAt!)}',
+                  style: KxText.mono(10, color: KxColors.textDim),
+                  maxLines: 1,
+                  softWrap: false,
+                ),
               ],
             ],
+          ),
+          // Explicit refresh: pull-to-refresh isn't discoverable (or mouse-draggable) on web/desktop.
+          IconButton(
+            tooltip: loading ? 'Refreshing…' : 'Refresh market data',
+            onPressed: loading ? null : onRefresh,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints.tightFor(width: _minTap, height: _minTap),
+            icon: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: loading
+                  ? const SizedBox(
+                      key: ValueKey('spin'),
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: KxColors.cyan),
+                    )
+                  : const Icon(Icons.refresh_rounded, key: ValueKey('icon'), size: 22, color: KxColors.textDim),
+            ),
           ),
         ],
       ),
@@ -306,6 +445,9 @@ class _HeroCard extends StatelessWidget {
     final pulse = _pulse(stats.topVolume);
     final pulseChange = pulse == null ? null : (pulse.last / pulse.first - 1) * 100;
     final accent = change == null ? KxColors.cyan : KxColors.change(change);
+    final changeText = change == null
+        ? '24h change unavailable'
+        : '${change >= 0 ? 'Up' : 'Down'} ${change.abs().toStringAsFixed(2)}% in the last 24 hours';
 
     return GlassCard(
       glow: KxColors.cyan,
@@ -330,48 +472,59 @@ class _HeroCard extends StatelessWidget {
                 child: Text('TOTAL MARKET CAP',
                     style: KxText.label(11), maxLines: 1, overflow: TextOverflow.ellipsis),
               ),
+              const SizedBox(width: 8),
               ChangePill(change, size: 12),
             ],
           ),
           const SizedBox(height: 14),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: AnimatedPrice(
-              value: stats.totalMarketCap,
-              compact: true,
-              style: KxText.mono(36, weight: FontWeight.w700),
+          Semantics(
+            label: 'Total market cap ${formatCompact(stats.totalMarketCap)}. $changeText',
+            excludeSemantics: true,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: AnimatedPrice(
+                value: stats.totalMarketCap,
+                compact: true,
+                style: KxText.mono(36, weight: FontWeight.w700),
+              ),
             ),
           ),
           const SizedBox(height: 4),
-          Text(
-            change == null
-                ? '24h change unavailable'
-                : '${change >= 0 ? 'Up' : 'Down'} ${change.abs().toStringAsFixed(2)}% in the last 24 hours',
-            style: KxText.body(12, color: KxColors.textDim),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          ExcludeSemantics(
+            child: Text(
+              changeText,
+              style: KxText.body(12, color: KxColors.textDim),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
           if (pulse != null) ...[
             const SizedBox(height: 14),
-            SizedBox(
-              height: 64,
-              width: double.infinity,
-              child: Sparkline(values: pulse, color: KxColors.change(pulseChange)),
+            ExcludeSemantics(
+              child: SizedBox(
+                height: 64,
+                width: double.infinity,
+                child: Sparkline(values: pulse, color: KxColors.change(pulseChange)),
+              ),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '7D PULSE · TOP-VOLUME INDEX',
-                    style: KxText.label(9, color: KxColors.textMuted),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+            Tooltip(
+              message: 'Market-cap weighted 7-day performance of the most-traded coins, rebased to 100',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '7D PULSE · TOP-VOLUME INDEX',
+                      style: KxText.label(9, color: KxColors.textDim),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                ),
-                Text(formatPercent(pulseChange), style: KxText.mono(11, color: KxColors.change(pulseChange))),
-              ],
+                  const SizedBox(width: 8),
+                  Text(formatPercent(pulseChange), style: KxText.mono(11, color: KxColors.change(pulseChange))),
+                ],
+              ),
             ),
           ] else ...[
             const SizedBox(height: 12),
@@ -435,7 +588,7 @@ class _CountUp extends StatelessWidget {
       tween: Tween<double>(begin: 0, end: target),
       duration: const Duration(milliseconds: 1200),
       curve: Curves.easeOutCubic,
-      builder: (context, v, _) => Text(format(v), style: style, maxLines: 1),
+      builder: (context, v, _) => Text(format(v), style: style, maxLines: 1, softWrap: false),
     );
   }
 }
@@ -510,20 +663,32 @@ class _KpiGrid extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         const spacing = 12.0;
-        // Floor so float rounding can never push the 2nd tile onto its own run.
-        final width = ((constraints.maxWidth - spacing) / 2).floorToDouble();
-        return Wrap(
-          spacing: spacing,
-          runSpacing: spacing,
+        final columns = constraints.maxWidth >= 560 ? 3 : 2;
+        // Explicit rows (not a Wrap) so tiles in a row share one height even
+        // when one label wraps to two lines at large text sizes.
+        return Column(
           children: [
-            for (final (i, k) in kpis.indexed)
-              SizedBox(
-                width: width,
-                child: _KpiTile(kpi: k)
-                    .animate(delay: (140 + i * 60).ms)
-                    .fadeIn(duration: 400.ms)
-                    .scaleXY(begin: 0.96, end: 1, duration: 400.ms, curve: Curves.easeOutCubic),
+            for (var r = 0; r < kpis.length; r += columns) ...[
+              if (r > 0) const SizedBox(height: spacing),
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (var i = r; i < r + columns; i++) ...[
+                      if (i > r) const SizedBox(width: spacing),
+                      Expanded(
+                        child: i < kpis.length
+                            ? _KpiTile(kpi: kpis[i])
+                                .animate(delay: (140 + i * 60).ms)
+                                .fadeIn(duration: 400.ms)
+                                .scaleXY(begin: 0.96, end: 1, duration: 400.ms, curve: Curves.easeOutCubic)
+                            : const SizedBox.shrink(),
+                      ),
+                    ],
+                  ],
+                ),
               ),
+            ],
           ],
         );
       },
@@ -538,36 +703,50 @@ class _KpiTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GlassCard(
-      radius: 18,
-      padding: const EdgeInsets.all(14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              _IconBadge(icon: kpi.icon, color: kpi.color, size: 30),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  kpi.label.toUpperCase(),
-                  style: KxText.label(10),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+    final value = kpi.value;
+    return Semantics(
+      container: true,
+      label: '${kpi.label}: ${value == null ? 'unavailable' : kpi.format(value)}. ${kpi.caption}',
+      excludeSemantics: true,
+      child: GlassCard(
+        radius: 18,
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          // Values line up along the bottom of each row regardless of label length.
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                _IconBadge(icon: kpi.icon, color: kpi.color, size: 30),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    kpi.label.toUpperCase(),
+                    style: KxText.label(10),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: _CountUp(value: kpi.value, format: kpi.format, style: KxText.mono(19, weight: FontWeight.w700)),
-          ),
-          const SizedBox(height: 2),
-          Text(kpi.caption,
-              style: KxText.body(11, color: KxColors.textMuted), maxLines: 1, overflow: TextOverflow.ellipsis),
-        ],
+              ],
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(height: 12),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: _CountUp(value: value, format: kpi.format, style: KxText.mono(19, weight: FontWeight.w700)),
+                ),
+                const SizedBox(height: 2),
+                Text(kpi.caption,
+                    style: KxText.body(11, color: KxColors.textDim), maxLines: 1, overflow: TextOverflow.ellipsis),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -587,6 +766,8 @@ class _DominanceCard extends StatefulWidget {
 }
 
 class _DominanceCardState extends State<_DominanceCard> {
+  static const _donutSize = 150.0;
+
   /// Selected slice, or -1 for none (the centre then shows the leader, BTC).
   int _selected = -1;
 
@@ -610,96 +791,125 @@ class _DominanceCardState extends State<_DominanceCard> {
     final focus = slices[selected < 0 ? 0 : selected];
     final total = slices.fold<double>(0, (s, e) => s + e.pct);
 
-    return GlassCard(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 150,
-            height: 150,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                TweenAnimationBuilder<double>(
-                  tween: Tween<double>(begin: 0, end: 1),
-                  duration: const Duration(milliseconds: 1100),
-                  curve: Curves.easeOutCubic,
-                  builder: (context, t, _) {
-                    final k = math.max(t, 0.001);
-                    return PieChart(
-                      PieChartData(
-                        startDegreeOffset: -90,
-                        sectionsSpace: 2,
-                        centerSpaceRadius: 46,
-                        pieTouchData: PieTouchData(
-                          touchCallback: (FlTouchEvent event, PieTouchResponse? response) {
-                            if (event is! FlTapUpEvent) return;
-                            final i = response?.touchedSection?.touchedSectionIndex ?? -1;
-                            if (i < 0 || i >= slices.length) {
-                              if (_selected != -1) setState(() => _selected = -1);
-                              return;
-                            }
-                            _select(i);
-                          },
-                        ),
-                        sections: [
-                          for (final (i, s) in slices.indexed)
-                            PieChartSectionData(
-                              value: s.pct * k,
-                              color: selected < 0 || selected == i ? s.color : s.color.withValues(alpha: 0.3),
-                              radius: selected == i ? 26 : 20,
-                              showTitle: false,
-                            ),
-                          // Transparent remainder makes the ring sweep in clockwise.
-                          if (t < 1)
-                            PieChartSectionData(
-                              value: total * (1 - k),
-                              color: Colors.transparent,
-                              radius: 20,
-                              showTitle: false,
-                            ),
+    final donut = Semantics(
+      label: 'Market-cap dominance chart. ${focus.label} ${focus.pct.toStringAsFixed(1)} percent',
+      child: SizedBox(
+        width: _donutSize,
+        height: _donutSize,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            ExcludeSemantics(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: 1),
+                duration: const Duration(milliseconds: 1100),
+                curve: Curves.easeOutCubic,
+                builder: (context, t, _) {
+                  final k = math.max(t, 0.001);
+                  return PieChart(
+                    PieChartData(
+                      startDegreeOffset: -90,
+                      sectionsSpace: 2,
+                      centerSpaceRadius: 46,
+                      pieTouchData: PieTouchData(
+                        touchCallback: (FlTouchEvent event, PieTouchResponse? response) {
+                          if (event is! FlTapUpEvent) return;
+                          final i = response?.touchedSection?.touchedSectionIndex ?? -1;
+                          if (i < 0 || i >= slices.length) {
+                            if (_selected != -1) setState(() => _selected = -1);
+                            return;
+                          }
+                          _select(i);
+                        },
+                      ),
+                      sections: [
+                        for (final (i, s) in slices.indexed)
+                          PieChartSectionData(
+                            value: s.pct * k,
+                            color: selected < 0 || selected == i ? s.color : s.color.withValues(alpha: 0.3),
+                            radius: selected == i ? 26 : 20,
+                            showTitle: false,
+                          ),
+                        // Transparent remainder makes the ring sweep in clockwise.
+                        if (t < 1)
+                          PieChartSectionData(
+                            value: total * (1 - k),
+                            color: Colors.transparent,
+                            radius: 20,
+                            showTitle: false,
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            ExcludeSemantics(
+              child: IgnorePointer(
+                // Keep the centre readout inside the donut hole at any text scale.
+                child: SizedBox(
+                  width: 78,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, anim) => FadeTransition(
+                        opacity: anim,
+                        child: ScaleTransition(scale: Tween<double>(begin: 0.85, end: 1).animate(anim), child: child),
+                      ),
+                      child: Column(
+                        key: ValueKey(focus.label),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(focus.label.toUpperCase(), style: KxText.label(10, color: focus.color)),
+                          const SizedBox(height: 2),
+                          _CountUp(
+                            value: focus.pct,
+                            format: (v) => '${v.toStringAsFixed(1)}%',
+                            style: KxText.mono(17, weight: FontWeight.w700),
+                          ),
+                          Text(selected < 0 ? 'leader' : 'share', style: KxText.body(9, color: KxColors.textDim)),
                         ],
                       ),
-                    );
-                  },
-                ),
-                IgnorePointer(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 250),
-                    transitionBuilder: (child, anim) => FadeTransition(
-                      opacity: anim,
-                      child: ScaleTransition(scale: Tween<double>(begin: 0.85, end: 1).animate(anim), child: child),
-                    ),
-                    child: Column(
-                      key: ValueKey(focus.label),
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(focus.label.toUpperCase(), style: KxText.label(10, color: focus.color)),
-                        const SizedBox(height: 2),
-                        _CountUp(
-                          value: focus.pct,
-                          format: (v) => '${v.toStringAsFixed(1)}%',
-                          style: KxText.mono(17, weight: FontWeight.w700),
-                        ),
-                        Text(selected < 0 ? 'leader' : 'share', style: KxText.body(9, color: KxColors.textMuted)),
-                      ],
                     ),
                   ),
                 ),
-              ],
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+
+    final legend = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final (i, s) in slices.indexed)
+          _LegendRow(
+            slice: s,
+            active: selected == i,
+            dimmed: selected >= 0 && selected != i,
+            onTap: () => _select(i),
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final (i, s) in slices.indexed)
-                  _LegendRow(slice: s, active: selected == i, dimmed: selected >= 0 && selected != i, onTap: () => _select(i)),
-              ],
-            ),
-          ),
-        ],
+      ],
+    );
+
+    return GlassCard(
+      padding: const EdgeInsets.all(16),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // Side-by-side needs room for "SYMBOL  12.3%" next to the donut;
+          // otherwise (narrow phones, large text) stack the legend underneath.
+          final textScale = MediaQuery.textScalerOf(context).scale(12) / 12;
+          final legendRoom = constraints.maxWidth - _donutSize - 16;
+          if (legendRoom >= 120 * textScale) {
+            return Row(children: [donut, const SizedBox(width: 16), Expanded(child: legend)]);
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [Center(child: donut), const SizedBox(height: 12), legend],
+          );
+        },
       ),
     );
   }
@@ -715,38 +925,47 @@ class _LegendRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        margin: const EdgeInsets.symmetric(vertical: 1),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-        decoration: BoxDecoration(
-          color: active ? slice.color.withValues(alpha: 0.12) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: AnimatedOpacity(
+    return Semantics(
+      button: true,
+      selected: active,
+      label: '${slice.label}, ${slice.pct.toStringAsFixed(1)} percent of total market cap',
+      excludeSemantics: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        // 40 + 2×2 margin = 44px hit target (margin is inside the detector).
+        child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
-          opacity: dimmed ? 0.45 : 1,
-          child: Row(
-            children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: slice.color,
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: slice.color.withValues(alpha: 0.6), blurRadius: 6)],
+          margin: const EdgeInsets.symmetric(vertical: 2),
+          constraints: const BoxConstraints(minHeight: _minTap - 4),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: active ? slice.color.withValues(alpha: 0.12) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 220),
+            opacity: dimmed ? 0.45 : 1,
+            child: Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: slice.color,
+                    shape: BoxShape.circle,
+                    boxShadow: [BoxShadow(color: slice.color.withValues(alpha: 0.6), blurRadius: 6)],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(slice.label,
-                    style: KxText.body(12, weight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
-              ),
-              Text('${slice.pct.toStringAsFixed(1)}%', style: KxText.mono(12, color: KxColors.textDim)),
-            ],
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(slice.label,
+                      style: KxText.body(12, weight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 6),
+                Text('${slice.pct.toStringAsFixed(1)}%', style: KxText.mono(12, color: KxColors.textDim)),
+              ],
+            ),
           ),
         ),
       ),
@@ -756,27 +975,50 @@ class _LegendRow extends StatelessWidget {
 
 // --- Sentiment gauge --------------------------------------------------------
 
+const _sentimentMethod = 'Estimated in-app from the 24h market-cap change and the average move of '
+    'the top gainers and losers. This is not the Crypto Fear & Greed Index or any official '
+    'index, and not financial advice.';
+
 class _EstimateTag extends StatelessWidget {
   const _EstimateTag();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: KxColors.borderStrong),
-        color: KxColors.surface,
+    return Tooltip(
+      message: _sentimentMethod,
+      triggerMode: TooltipTriggerMode.tap,
+      showDuration: const Duration(seconds: 6),
+      // Informational only (the full method note is also printed in the card),
+      // kept compact so section headers stay aligned in the two-column layout.
+      child: Semantics(
+        label: 'In-app estimate',
+        excludeSemantics: true,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: KxColors.borderStrong),
+            color: KxColors.surface,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('ESTIMATE', style: KxText.label(9, color: KxColors.textDim)),
+              const SizedBox(width: 4),
+              const Icon(Icons.info_outline_rounded, size: 12, color: KxColors.textDim),
+            ],
+          ),
+        ),
       ),
-      child: Text('ESTIMATE', style: KxText.label(9, color: KxColors.textDim)),
     );
   }
 }
 
-typedef _SentimentInput = ({double score, double? mcapChange, double? gainersAvg, double? losersAvg});
+typedef _SentimentInput = ({double? score, double? mcapChange, double? gainersAvg, double? losersAvg});
 
-/// Fear & greed style score (0-100), computed client-side:
+/// Fear & greed *style* score (0-100), computed client-side:
 /// 50 ± market-cap momentum (±30) ± top-mover balance (±20).
+/// Returns a null score when there is no input at all, rather than a fake "Neutral 50".
 _SentimentInput _estimateSentiment(GlobalStats s) {
   double? avg(List<Coin> coins) {
     final v = coins.map((c) => c.change24h).whereType<double>().toList();
@@ -784,6 +1026,9 @@ _SentimentInput _estimateSentiment(GlobalStats s) {
   }
 
   final gainers = avg(s.topGainers), losers = avg(s.topLosers);
+  if (s.marketCapChange24h == null && gainers == null && losers == null) {
+    return (score: null, mcapChange: null, gainersAvg: null, losersAvg: null);
+  }
   final momentum = ((s.marketCapChange24h ?? 0) * 6).clamp(-30.0, 30.0).toDouble();
   final g = gainers ?? 0, l = losers ?? 0;
   final denom = g.abs() + l.abs();
@@ -815,42 +1060,68 @@ class _SentimentCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = _estimateSentiment(stats);
+    final target = s.score;
     return GlassCard(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TweenAnimationBuilder<double>(
-            tween: Tween<double>(begin: 0, end: s.score / 100),
-            duration: const Duration(milliseconds: 1400),
-            curve: Curves.easeOutCubic,
-            builder: (context, t, _) {
-              final score = t * 100;
-              final color = _sentimentColor(score);
-              return SizedBox(
-                height: 150,
-                child: Stack(
-                  children: [
-                    Positioned.fill(child: CustomPaint(painter: _GaugePainter(t))),
-                    Align(
-                      alignment: Alignment.bottomCenter,
-                      child: Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('${score.round()}', style: KxText.mono(34, weight: FontWeight.w700)),
-                            Text(_sentimentLabel(score),
-                                style: KxText.display(14, weight: FontWeight.w600, color: color)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+          if (target == null)
+            SizedBox(
+              height: 150,
+              child: Center(
+                child: Text(
+                  'Not enough market data to estimate sentiment right now.',
+                  textAlign: TextAlign.center,
+                  style: KxText.body(13, color: KxColors.textDim),
                 ),
-              );
-            },
-          ),
+              ),
+            )
+          else
+            Semantics(
+              label: 'Estimated sentiment ${target.round()} out of 100, ${_sentimentLabel(target)}. '
+                  'In-app estimate, not an official index.',
+              excludeSemantics: true,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0, end: target / 100),
+                duration: const Duration(milliseconds: 1400),
+                curve: Curves.easeOutCubic,
+                builder: (context, t, _) {
+                  final score = t * 100;
+                  final color = _sentimentColor(score);
+                  return SizedBox(
+                    height: 150,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(child: CustomPaint(painter: _GaugePainter(t))),
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            // Scale down rather than overflow the gauge at large text sizes.
+                            child: SizedBox(
+                              height: 72,
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                alignment: Alignment.bottomCenter,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text('${score.round()}', style: KxText.mono(34, weight: FontWeight.w700)),
+                                    Text(_sentimentLabel(score),
+                                        style: KxText.display(14, weight: FontWeight.w600, color: color)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
           const SizedBox(height: 14),
           Wrap(
             spacing: 8,
@@ -864,10 +1135,9 @@ class _SentimentCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            'Estimated on-device from 24h market-cap change and top-mover magnitudes. '
-            'Not an official index or financial advice.',
+            _sentimentMethod,
             textAlign: TextAlign.center,
-            style: KxText.body(11, color: KxColors.textMuted),
+            style: KxText.body(11, color: KxColors.textDim),
           ),
         ],
       ),
@@ -883,20 +1153,24 @@ class _MetricChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: KxColors.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(label, style: KxText.body(11, color: KxColors.textDim)),
-          const SizedBox(width: 6),
-          Text(formatPercent(value), style: KxText.mono(11, weight: FontWeight.w600, color: KxColors.change(value))),
-        ],
+    return Semantics(
+      label: '$label ${formatPercent(value)}',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: KxColors.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: KxText.body(11, color: KxColors.textDim)),
+            const SizedBox(width: 6),
+            Text(formatPercent(value), style: KxText.mono(11, weight: FontWeight.w600, color: KxColors.change(value))),
+          ],
+        ),
       ),
     );
   }
@@ -1018,10 +1292,25 @@ class _TopMoversState extends State<_TopMovers> {
 
   @override
   Widget build(BuildContext context) {
-    final (coins, prefix) = switch (_mode) {
-      _Movers.gainers => (widget.stats.topGainers, 'gain'),
-      _Movers.losers => (widget.stats.topLosers, 'lose'),
-      _Movers.volume => (widget.stats.topVolume, 'vol'),
+    final (coins, prefix, blurb, emptyIcon) = switch (_mode) {
+      _Movers.gainers => (
+          widget.stats.topGainers,
+          'gain',
+          'Biggest 24h price gains · tap a coin for details',
+          Icons.trending_up_rounded,
+        ),
+      _Movers.losers => (
+          widget.stats.topLosers,
+          'lose',
+          'Biggest 24h price drops · tap a coin for details',
+          Icons.trending_down_rounded,
+        ),
+      _Movers.volume => (
+          widget.stats.topVolume,
+          'vol',
+          'Most traded by 24h volume · tap a coin for details',
+          Icons.bar_chart_rounded,
+        ),
     };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1032,18 +1321,36 @@ class _TopMoversState extends State<_TopMovers> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: KxSegmented<_Movers>(
-            options: _Movers.values,
-            selected: _mode,
-            labelOf: (m) => switch (m) {
-              _Movers.gainers => 'Gainers',
-              _Movers.losers => 'Losers',
-              _Movers.volume => 'Volume',
-            },
-            onSelected: (m) => setState(() => _mode = m),
+          // Tight 44px height lifts the control's own 38px to a comfortable tap target.
+          child: SizedBox(
+            height: _minTap,
+            child: KxSegmented<_Movers>(
+              options: _Movers.values,
+              selected: _mode,
+              labelOf: (m) => switch (m) {
+                _Movers.gainers => 'Gainers',
+                _Movers.losers => 'Losers',
+                _Movers.volume => 'Volume',
+              },
+              onSelected: (m) {
+                if (m != _mode) setState(() => _mode = m);
+              },
+            ),
           ),
         ),
-        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            child: Text(
+              blurb,
+              key: ValueKey(blurb),
+              style: KxText.body(12, color: KxColors.textDim),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 350),
           switchInCurve: Curves.easeOutCubic,
@@ -1062,9 +1369,19 @@ class _TopMoversState extends State<_TopMovers> {
           child: coins.isEmpty
               ? Padding(
                   key: ValueKey('empty-$_mode'),
-                  padding: const EdgeInsets.all(24),
-                  child: Text('No data for this list right now.',
-                      textAlign: TextAlign.center, style: KxText.body(13, color: KxColors.textDim)),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(emptyIcon, size: 28, color: KxColors.textMuted),
+                      const SizedBox(height: 8),
+                      Text('No coins in this list right now.',
+                          textAlign: TextAlign.center, style: KxText.body(13, color: KxColors.textDim)),
+                      const SizedBox(height: 2),
+                      Text('Pull down or tap refresh to try again.',
+                          textAlign: TextAlign.center, style: KxText.body(11, color: KxColors.textDim)),
+                    ],
+                  ),
                 )
               : Column(
                   key: ValueKey(_mode),

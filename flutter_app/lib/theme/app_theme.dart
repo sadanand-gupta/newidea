@@ -1,4 +1,5 @@
 import 'package:animations/animations.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -23,7 +24,7 @@ abstract final class KxColors {
 
   static const text = Color(0xFFEAF0FF);
   static const textDim = Color(0xFF9AA3B8);
-  static const textMuted = Color(0xFF5F6780);
+  static const textMuted = Color(0xFF7C8599); // >= 4.5:1 on bg for small text
 
   static const brandGradient = LinearGradient(
     colors: [cyan, violet],

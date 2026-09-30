@@ -66,6 +66,8 @@ class _KxSearchFieldState extends State<KxSearchField> {
             suffixIcon: widget.controller.text.isEmpty
                 ? null
                 : IconButton(
+                    tooltip: 'Clear search',
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                     icon: const Icon(Icons.close_rounded, color: KxColors.textDim, size: 20),
                     onPressed: () {
                       widget.controller.clear();
@@ -99,7 +101,7 @@ class KxChipBar<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 38,
+      height: 44,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -108,31 +110,38 @@ class KxChipBar<T> extends StatelessWidget {
         itemBuilder: (context, i) {
           final option = options[i];
           final active = option == selected;
-          return GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              onSelected(option);
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                gradient: active ? KxColors.brandGradient : null,
-                color: active ? null : KxColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: active ? Colors.transparent : KxColors.border),
-                boxShadow: [
-                  if (active) BoxShadow(color: KxColors.cyan.withValues(alpha: 0.3), blurRadius: 14, spreadRadius: -4),
-                ],
-              ),
-              child: AnimatedDefaultTextStyle(
+          return Semantics(
+            button: true,
+            selected: active,
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onSelected(option);
+              },
+              child: AnimatedContainer(
                 duration: const Duration(milliseconds: 280),
-                style: KxText.body(13,
+                curve: Curves.easeOutCubic,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  gradient: active ? KxColors.brandGradient : null,
+                  color: active ? null : KxColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: active ? Colors.transparent : KxColors.border),
+                  boxShadow: [
+                    if (active)
+                      BoxShadow(color: KxColors.cyan.withValues(alpha: 0.3), blurRadius: 14, spreadRadius: -4),
+                  ],
+                ),
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 280),
+                  style: KxText.body(
+                    13,
                     weight: active ? FontWeight.w700 : FontWeight.w500,
-                    color: active ? Colors.black : KxColors.textDim),
-                child: Text(labelOf(option)),
+                    color: active ? Colors.black : KxColors.textDim,
+                  ),
+                  child: Text(labelOf(option)),
+                ),
               ),
             ),
           );
@@ -161,7 +170,7 @@ class KxSegmented<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final index = options.indexOf(selected);
     return Container(
-      height: 38,
+      height: 44,
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.25),
@@ -192,19 +201,27 @@ class KxSegmented<T> extends StatelessWidget {
                 children: [
                   for (final option in options)
                     Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          onSelected(option);
-                        },
-                        child: Center(
-                          child: AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 250),
-                            style: KxText.mono(12,
+                      child: Semantics(
+                        button: true,
+                        selected: option == selected,
+                        label: labelOf(option),
+                        excludeSemantics: true,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            onSelected(option);
+                          },
+                          child: Center(
+                            child: AnimatedDefaultTextStyle(
+                              duration: const Duration(milliseconds: 250),
+                              style: KxText.mono(
+                                12,
                                 weight: FontWeight.w700,
-                                color: option == selected ? Colors.black : KxColors.textDim),
-                            child: Text(labelOf(option)),
+                                color: option == selected ? Colors.black : KxColors.textDim,
+                              ),
+                              child: Text(labelOf(option), maxLines: 1, overflow: TextOverflow.ellipsis),
+                            ),
                           ),
                         ),
                       ),
@@ -297,29 +314,38 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, activeIcon, label) = item;
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        AnimatedScale(
-          scale: active ? 1.12 : 1,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOutBack,
-          child: active
-              ? ShaderMask(
-                  blendMode: BlendMode.srcIn,
-                  shaderCallback: (b) => KxColors.brandGradient.createShader(Offset.zero & b.size),
-                  child: Icon(activeIcon, size: 24),
-                )
-              : Icon(icon, size: 24, color: KxColors.textMuted),
-        ),
-        const SizedBox(height: 3),
-        AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 250),
-          style: KxText.body(11,
-              weight: active ? FontWeight.w700 : FontWeight.w500, color: active ? KxColors.text : KxColors.textMuted),
-          child: Text(label),
-        ),
-      ],
+    // The bar has a fixed 56px height, so the icon + label shrink to fit
+    // instead of overflowing at large system text sizes.
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          AnimatedScale(
+            scale: active ? 1.12 : 1,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutBack,
+            child: active
+                ? ShaderMask(
+                    blendMode: BlendMode.srcIn,
+                    shaderCallback: (b) => KxColors.brandGradient.createShader(Offset.zero & b.size),
+                    child: Icon(activeIcon, size: 24),
+                  )
+                : Icon(icon, size: 24, color: KxColors.textMuted),
+          ),
+          const SizedBox(height: 3),
+          AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 250),
+            style: KxText.body(
+              11,
+              weight: active ? FontWeight.w700 : FontWeight.w500,
+              color: active ? KxColors.text : KxColors.textMuted,
+            ),
+            child: Text(label),
+          ),
+        ],
+      ),
     );
   }
 }

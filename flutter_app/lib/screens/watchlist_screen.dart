@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
@@ -12,7 +13,6 @@ import '../state/loadable.dart';
 import '../state/watchlist_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/coin_tile.dart';
-import '../widgets/controls.dart';
 import '../widgets/formatters.dart';
 import '../widgets/glass.dart';
 import '../widgets/market_widgets.dart';
@@ -21,6 +21,9 @@ import 'navigation.dart';
 
 const _autoRefresh = Duration(seconds: 30);
 const _heroPrefix = 'watch';
+
+/// Content never gets wider than this on desktop / web.
+const _maxContentWidth = 760.0;
 
 enum _Sort { none, price, change, marketCap }
 
@@ -38,6 +41,11 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
   late final WatchlistProvider _watchlist;
   Set<String> _loadedIds = {};
   Timer? _timer;
+  Listenable? _tickerMode;
+  DateTime? _lastFetch;
+
+  /// The watchlist changed while this tab was hidden; refetch when shown.
+  bool _stale = false;
   _Sort _sort = _Sort.none;
 
   /// Row ids that already played their entrance animation, so rows don't
@@ -51,29 +59,65 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     _watchlist.addListener(_onWatchlistChanged);
     _reload();
     _timer = Timer.periodic(_autoRefresh, (_) {
-      if (mounted && !_coins.loading) _reload();
+      // Only poll while this tab is on screen and the app is in the foreground.
+      if (_visible && !_coins.loading) _reload();
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // TickerMode is off while the tab is hidden in the shell's IndexedStack or
+    // covered by a pushed route; catch up as soon as it is shown again.
+    final notifier = TickerMode.getValuesNotifier(context);
+    if (!identical(notifier, _tickerMode)) {
+      _tickerMode?.removeListener(_onVisibilityChanged);
+      _tickerMode = notifier..addListener(_onVisibilityChanged);
+    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _tickerMode?.removeListener(_onVisibilityChanged);
     _watchlist.removeListener(_onWatchlistChanged);
     _coins.dispose();
     super.dispose();
   }
 
+  bool get _visible {
+    if (!mounted || !TickerMode.getValuesNotifier(context).value.enabled) return false;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    return lifecycle == null || lifecycle == AppLifecycleState.resumed;
+  }
+
   Future<void> _reload() {
     _loadedIds = _watchlist.ids;
+    _stale = false;
+    _lastFetch = DateTime.now();
     return _coins.load(() => context.read<ApiService>().getWatchlist());
+  }
+
+  /// Retry from the full-screen error: the ids may have failed too.
+  Future<void> _retry() async {
+    if (_watchlist.error != null) await _watchlist.load();
+    if (mounted) await _reload();
+  }
+
+  void _onVisibilityChanged() {
+    if (!_visible || _coins.loading) return;
+    final last = _lastFetch;
+    if (_stale || last == null || DateTime.now().difference(last) >= _autoRefresh) _reload();
   }
 
   /// Removals are applied locally (instant); additions need fresh coin data.
   void _onWatchlistChanged() {
     if (!mounted) return;
-    if (!_loadedIds.containsAll(_watchlist.ids)) {
+    if (!_loadedIds.containsAll(_watchlist.ids) && _visible) {
       _reload();
     } else {
+      // Hidden tab: note it and fetch when the tab is next shown.
+      if (!_loadedIds.containsAll(_watchlist.ids)) _stale = true;
       setState(() {});
     }
   }
@@ -124,75 +168,83 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: SafeArea(
-        bottom: false,
-        child: ListenableBuilder(
-          listenable: _coins,
-          builder: (context, _) {
-            final all = _coins.data;
-            final Widget body;
-            if (all == null) {
-              body = _coins.error != null
-                  ? Padding(
-                      key: const ValueKey('error'),
-                      padding: const EdgeInsets.only(bottom: 90),
-                      child: ErrorView(message: '${_coins.error}', onRetry: _reload),
-                    )
-                  : const LoadingView(key: ValueKey('loading'), rows: 4);
-            } else {
-              final ids = _watchlist.ids;
-              final coins = _sorted(all.where((c) => ids.contains(c.id)).toList());
-              body = coins.isEmpty
-                  ? Padding(
-                      key: const ValueKey('empty'),
-                      padding: const EdgeInsets.only(bottom: 90),
-                      child: EmptyView(
-                        icon: Icons.star_outline_rounded,
-                        title: 'Your watchlist is empty',
-                        subtitle: 'Tap the star next to any coin to track its price and 24h move here.',
-                        actionLabel: 'Explore markets',
-                        onAction: widget.onBrowseMarkets,
-                      ),
-                    )
-                  : KeyedSubtree(key: const ValueKey('list'), child: _buildList(coins));
-            }
-            return Column(
-              children: [
-                _Header(
-                  eyebrow: 'PORTFOLIO',
-                  title: 'Watchlist',
-                  source: _coins.source,
-                  updatedAt: _coins.updatedAt,
-                ),
-                _LoadingLine(visible: _coins.loading && all != null),
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 300),
-                          layoutBuilder: (current, previous) => Stack(
-                            fit: StackFit.expand,
-                            children: [...previous, if (current != null) current],
-                          ),
-                          child: body,
+    // No Scaffold of its own: the shell's Scaffold hosts the drawer (opened
+    // from the header) and snack bars, which then float above the nav bar.
+    return SafeArea(
+      bottom: false,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: _maxContentWidth),
+          child: ListenableBuilder(
+            listenable: _coins,
+            builder: (context, _) {
+              final all = _coins.data;
+              final Widget body;
+              if (all == null) {
+                body = _coins.error != null && !_coins.loading
+                    ? Padding(
+                        key: const ValueKey('error'),
+                        padding: const EdgeInsets.only(bottom: 90),
+                        child: ErrorView(message: '${_coins.error}', onRetry: _retry),
+                      )
+                    : const LoadingView(key: ValueKey('loading'), rows: 4);
+              } else {
+                final ids = _watchlist.ids;
+                // If the id list itself failed to load, trust the server's list
+                // rather than filtering everything away into a false "empty".
+                final idsKnown = _watchlist.error == null || ids.isNotEmpty;
+                final coins = _sorted(idsKnown ? all.where((c) => ids.contains(c.id)).toList() : [...all]);
+                body = coins.isEmpty
+                    ? Padding(
+                        key: const ValueKey('empty'),
+                        padding: const EdgeInsets.only(bottom: 90),
+                        child: EmptyView(
+                          icon: Icons.star_outline_rounded,
+                          title: 'Your watchlist is empty',
+                          subtitle: 'Tap the star next to any coin to track its price and 24h move here.',
+                          actionLabel: 'Explore markets',
+                          onAction: widget.onBrowseMarkets,
                         ),
-                      ),
-                      if (all != null && _coins.error != null)
-                        Positioned(
-                          left: 16,
-                          right: 16,
-                          bottom: 104,
-                          child: RefreshErrorBanner(message: '${_coins.error}', onRetry: _reload),
-                        ),
-                    ],
+                      )
+                    : KeyedSubtree(key: const ValueKey('list'), child: _buildList(coins));
+              }
+              return Column(
+                children: [
+                  _Header(
+                    eyebrow: 'PORTFOLIO',
+                    title: 'Watchlist',
+                    source: _coins.source,
+                    updatedAt: _coins.updatedAt,
                   ),
-                ),
-              ],
-            );
-          },
+                  _LoadingLine(visible: _coins.loading && all != null),
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 300),
+                            layoutBuilder: (current, previous) => Stack(
+                              fit: StackFit.expand,
+                              children: [...previous, if (current != null) current],
+                            ),
+                            child: body,
+                          ),
+                        ),
+                        if (all != null && _coins.error != null)
+                          Positioned(
+                            left: 16,
+                            right: 16,
+                            bottom: 104,
+                            child: RefreshErrorBanner(message: '${_coins.error}', onRetry: _reload),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -223,15 +275,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           if (i == 1) {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: KxChipBar<_Sort>(
-                options: _Sort.values,
+              child: _SortBar(
                 selected: _sort,
-                labelOf: (s) => switch (s) {
-                  _Sort.none => 'Default',
-                  _Sort.price => 'Price',
-                  _Sort.change => '24h %',
-                  _Sort.marketCap => 'Market cap',
-                },
                 onSelected: (s) => setState(() => _sort = s),
               ),
             );
@@ -245,6 +290,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             child: _SwipeToRemove(
               key: ValueKey('swipe-${coin.id}'),
               coinId: coin.id,
+              coinName: coin.name,
               onRemove: () => _remove(coin),
               child: CoinTile(
                 coin: coin,
@@ -272,17 +318,41 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 16, 10),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          Tooltip(
+            message: 'Open menu',
+            child: Semantics(
+              button: true,
+              label: 'Open menu',
+              excludeSemantics: true,
+              child: GlassCard(
+                radius: 14,
+                padding: const EdgeInsets.all(12),
+                onTap: () => Scaffold.of(context).openDrawer(),
+                child: const Icon(Icons.menu_rounded, size: 20, color: KxColors.text),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(eyebrow, style: KxText.label(11, color: KxColors.cyan)),
+                Text(eyebrow,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: KxText.label(11, color: KxColors.cyan).copyWith(letterSpacing: 2.4)),
                 const SizedBox(height: 2),
-                GradientText(title, style: KxText.display(28)),
+                Semantics(
+                  header: true,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: GradientText(title, style: KxText.display(28)),
+                  ),
+                ),
               ],
             ),
           ),
@@ -293,7 +363,7 @@ class _Header extends StatelessWidget {
               SourceBadge(source: source),
               if (updatedAt != null) ...[
                 const SizedBox(height: 6),
-                Text('updated ${formatTime(updatedAt!)}', style: KxText.mono(10, color: KxColors.textMuted)),
+                Text('Updated ${formatTime(updatedAt!)}', style: KxText.mono(10, color: KxColors.textMuted)),
               ],
             ],
           ),
@@ -365,9 +435,16 @@ class _RevealState extends State<_Reveal> {
 // --- Swipe to remove --------------------------------------------------------
 
 class _SwipeToRemove extends StatefulWidget {
-  const _SwipeToRemove({super.key, required this.coinId, required this.onRemove, required this.child});
+  const _SwipeToRemove({
+    super.key,
+    required this.coinId,
+    required this.coinName,
+    required this.onRemove,
+    required this.child,
+  });
 
   final String coinId;
+  final String coinName;
   final VoidCallback onRemove;
   final Widget child;
 
@@ -387,65 +464,145 @@ class _SwipeToRemoveState extends State<_SwipeToRemove> {
 
   @override
   Widget build(BuildContext context) {
-    return Dismissible(
-      key: ValueKey(widget.coinId),
-      direction: DismissDirection.endToStart,
-      dismissThresholds: const {DismissDirection.endToStart: _threshold},
-      onUpdate: (details) {
-        _progress.value = details.progress;
-        if (details.reached && !details.previousReached) HapticFeedback.selectionClick();
+    // Swiping isn't discoverable by screen readers: expose it as an action.
+    return Semantics(
+      customSemanticsActions: {
+        CustomSemanticsAction(label: 'Remove ${widget.coinName} from watchlist'): widget.onRemove,
       },
-      onDismissed: (_) => widget.onRemove(),
-      background: Padding(
-        // Matches CoinTile's outer inset so the red card sits exactly behind it.
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(18),
-            gradient: LinearGradient(
-              colors: [KxColors.down.withValues(alpha: 0.04), KxColors.down.withValues(alpha: 0.42)],
+      child: Dismissible(
+        key: ValueKey(widget.coinId),
+        direction: DismissDirection.endToStart,
+        dismissThresholds: const {DismissDirection.endToStart: _threshold},
+        onUpdate: (details) {
+          _progress.value = details.progress;
+          if (details.reached && !details.previousReached) HapticFeedback.selectionClick();
+        },
+        onDismissed: (_) => widget.onRemove(),
+        background: Padding(
+          // Matches CoinTile's outer inset so the red card sits exactly behind it.
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              gradient: LinearGradient(
+                colors: [KxColors.down.withValues(alpha: 0.04), KxColors.down.withValues(alpha: 0.42)],
+              ),
+              border: Border.all(color: KxColors.down.withValues(alpha: 0.45)),
             ),
-            border: Border.all(color: KxColors.down.withValues(alpha: 0.45)),
-          ),
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: Padding(
-              padding: const EdgeInsets.only(right: 22),
-              child: ValueListenableBuilder<double>(
-                valueListenable: _progress,
-                builder: (context, p, _) {
-                  final k = (p / _threshold).clamp(0.0, 1.0).toDouble();
-                  return Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Opacity(
-                        opacity: k,
-                        child: Text('REMOVE', style: KxText.label(11, color: Colors.white)),
-                      ),
-                      const SizedBox(width: 10),
-                      Transform.scale(
-                        scale: 0.7 + 0.55 * k,
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: KxColors.down.withValues(alpha: 0.25 + 0.5 * k),
-                            boxShadow: [
-                              BoxShadow(color: KxColors.down.withValues(alpha: 0.5 * k), blurRadius: 14),
-                            ],
-                          ),
-                          child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 22),
+                child: ValueListenableBuilder<double>(
+                  valueListenable: _progress,
+                  builder: (context, p, _) {
+                    final k = (p / _threshold).clamp(0.0, 1.0).toDouble();
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Opacity(
+                          opacity: k,
+                          child: Text('REMOVE', style: KxText.label(11, color: Colors.white)),
                         ),
-                      ),
-                    ],
-                  );
-                },
+                        const SizedBox(width: 10),
+                        Transform.scale(
+                          scale: 0.7 + 0.55 * k,
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: KxColors.down.withValues(alpha: 0.25 + 0.5 * k),
+                              boxShadow: [
+                                BoxShadow(color: KxColors.down.withValues(alpha: 0.5 * k), blurRadius: 14),
+                              ],
+                            ),
+                            child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
           ),
         ),
+        child: widget.child,
       ),
-      child: widget.child,
+    );
+  }
+}
+
+// --- Sort bar ---------------------------------------------------------------
+
+/// Sort chips with 44px tap targets and selected-state semantics.
+class _SortBar extends StatelessWidget {
+  const _SortBar({required this.selected, required this.onSelected});
+
+  final _Sort selected;
+  final ValueChanged<_Sort> onSelected;
+
+  static String _label(_Sort s) => switch (s) {
+        _Sort.none => 'Default',
+        _Sort.price => 'Price',
+        _Sort.change => '24h %',
+        _Sort.marketCap => 'Market cap',
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    // Grows with the text scale so large-text chips never clip.
+    final height = math.max(44.0, MediaQuery.textScalerOf(context).scale(13) * 1.3 + 22);
+    return SizedBox(
+      height: height,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _Sort.values.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final option = _Sort.values[i];
+          final active = option == selected;
+          return Semantics(
+            button: true,
+            selected: active,
+            label: 'Sort by ${_label(option)}',
+            excludeSemantics: true,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (active) return;
+                HapticFeedback.selectionClick();
+                onSelected(option);
+              },
+              child: Center(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: active ? KxColors.brandGradient : null,
+                    color: active ? null : KxColors.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: active ? Colors.transparent : KxColors.border),
+                    boxShadow: [
+                      if (active)
+                        BoxShadow(color: KxColors.cyan.withValues(alpha: 0.3), blurRadius: 14, spreadRadius: -4),
+                    ],
+                  ),
+                  child: Text(
+                    _label(option),
+                    maxLines: 1,
+                    style: KxText.body(13,
+                        weight: active ? FontWeight.w700 : FontWeight.w500,
+                        color: active ? Colors.black : KxColors.textDim),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -601,7 +758,11 @@ class _PerformerChip extends StatelessWidget {
                 const SizedBox(height: 1),
                 Text(coin.symbol,
                     style: KxText.display(14, weight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
-                ChangePill(coin.change24h, size: 10, filled: false),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: ChangePill(coin.change24h, size: 10, filled: false),
+                ),
               ],
             ),
           ),

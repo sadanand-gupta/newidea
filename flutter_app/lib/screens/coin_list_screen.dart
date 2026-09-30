@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
+import 'dart:ui' show ImageFilter, PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,7 +16,6 @@ import '../widgets/controls.dart';
 import '../widgets/formatters.dart';
 import '../widgets/glass.dart';
 import '../widgets/market_widgets.dart';
-import '../widgets/skeleton_loader.dart';
 import '../widgets/state_views.dart';
 import 'navigation.dart';
 
@@ -26,6 +25,21 @@ const Duration _kAutoRefresh = Duration(seconds: 30);
 const Duration _kEntranceWindow = Duration(milliseconds: 1200);
 const String _kListHero = 'mkt';
 const String _kTrendHero = 'trend';
+
+/// Readable column width on tablets/desktop/web; phones use the full width.
+const double _kMaxContentWidth = 820;
+
+/// Width above which a pointer-friendly refresh button is shown (mouse users
+/// can't pull-to-refresh).
+const double _kShowRefreshButtonWidth = 600;
+
+/// Centers [child] and caps it at [_kMaxContentWidth].
+Widget _readable(Widget child) => Center(
+  child: ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: _kMaxContentWidth),
+    child: child,
+  ),
+);
 
 /// Markets home: live coin list with search, filters, sorting, a price tape
 /// and a trending carousel. Auto-refreshes every 30s while visible.
@@ -62,6 +76,11 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
 
   String? _animatedKey;
   DateTime _animateUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// id -> index for the current list, so findChildIndexCallback is O(1)
+  /// instead of a linear scan per row on every refresh.
+  List<Coin>? _indexedList;
+  Map<String, int> _indexOf = const {};
 
   @override
   void initState() {
@@ -116,7 +135,7 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
   void _onAutoRefresh() {
     if (!mounted || _coins.loading || (_debounce?.isActive ?? false)) return;
     // Skip while this tab is hidden (IndexedStack) or covered by another route.
-    if (!TickerMode.getNotifier(context).value) return;
+    if (!TickerMode.getValuesNotifier(context).value.enabled) return;
     _reload();
   }
 
@@ -233,92 +252,101 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
 
     return SafeArea(
       bottom: false,
-      child: ListenableBuilder(
-        listenable: _coins,
-        builder: (context, _) {
-          final coins = _coins.data;
-          _deriveFromSnapshot();
-          final showTrending =
-              _searchController.text.trim().isEmpty && _filter == CoinFilter.all && _trending.isNotEmpty;
+      child: LayoutBuilder(
+        builder: (context, constraints) => ListenableBuilder(
+          listenable: _coins,
+          builder: (context, _) {
+            final width = constraints.maxWidth;
+            final inset = math.max(0.0, (width - _kMaxContentWidth) / 2);
+            final showRefreshButton = width >= _kShowRefreshButtonWidth;
+            final coins = _coins.data;
+            _deriveFromSnapshot();
+            final showTrending =
+                _searchController.text.trim().isEmpty && _filter == CoinFilter.all && _trending.isNotEmpty;
 
-          return Stack(
-            children: [
-              RefreshIndicator(
-                onRefresh: _pullToRefresh,
-                color: KxColors.cyan,
-                backgroundColor: KxColors.bgElevated,
-                child: CustomScrollView(
-                  controller: _scrollController,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                  slivers: [
-                    SliverToBoxAdapter(key: const ValueKey('header'), child: _buildHeader()),
-                    SliverToBoxAdapter(
-                      key: const ValueKey('tape'),
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 400),
-                        child: _tape.isEmpty
-                            ? const SizedBox(width: double.infinity)
-                            : Padding(
-                                key: const ValueKey('tape-on'),
-                                padding: const EdgeInsets.only(top: 14),
-                                child: TickerTape(coins: _tape),
-                              ),
+            return Stack(
+              children: [
+                RefreshIndicator(
+                  onRefresh: _pullToRefresh,
+                  color: KxColors.cyan,
+                  backgroundColor: KxColors.bgElevated,
+                  child: CustomScrollView(
+                    controller: _scrollController,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                    slivers: [
+                      SliverToBoxAdapter(
+                        key: const ValueKey('header'),
+                        child: _readable(_buildHeader(showRefreshButton: showRefreshButton)),
                       ),
-                    ),
-                    SliverToBoxAdapter(
-                      key: const ValueKey('trending'),
-                      child: AnimatedSize(
-                        duration: const Duration(milliseconds: 380),
-                        curve: Curves.easeOutCubic,
-                        alignment: Alignment.topCenter,
-                        child: showTrending
-                            ? _TrendingSection(coins: _trending)
-                            : const SizedBox(width: double.infinity, height: 6),
-                      ),
-                    ),
-                    SliverPersistentHeader(
-                      key: const ValueKey('filters'),
-                      pinned: true,
-                      delegate: _FilterBarDelegate(
-                        extent: 72 + searchHeight,
-                        loading: _coins.loading && coins != null,
-                        search: KxSearchField(
-                          controller: _searchController,
-                          onChanged: _onSearchChanged,
-                          hint: 'Search name or symbol',
-                        ),
-                        filters: KxChipBar<CoinFilter>(
-                          options: CoinFilter.values,
-                          selected: _filter,
-                          labelOf: (f) => f.label,
-                          onSelected: _onFilterSelected,
+                      SliverToBoxAdapter(
+                        key: const ValueKey('tape'),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 400),
+                          child: _tape.isEmpty
+                              ? const SizedBox(width: double.infinity)
+                              : Padding(
+                                  key: const ValueKey('tape-on'),
+                                  padding: const EdgeInsets.only(top: 14),
+                                  child: TickerTape(coins: _tape),
+                                ),
                         ),
                       ),
-                    ),
-                    ..._buildBody(coins),
-                    SliverToBoxAdapter(
-                      key: const ValueKey('bottom'),
-                      child: SizedBox(height: bottomClearance),
-                    ),
-                  ],
+                      SliverToBoxAdapter(
+                        key: const ValueKey('trending'),
+                        child: AnimatedSize(
+                          duration: const Duration(milliseconds: 380),
+                          curve: Curves.easeOutCubic,
+                          alignment: Alignment.topCenter,
+                          child: showTrending
+                              ? _readable(_TrendingSection(coins: _trending, clip: inset > 0))
+                              : const SizedBox(width: double.infinity, height: 6),
+                        ),
+                      ),
+                      SliverPersistentHeader(
+                        key: const ValueKey('filters'),
+                        pinned: true,
+                        delegate: _FilterBarDelegate(
+                          extent: 72 + searchHeight,
+                          loading: _coins.loading && coins != null,
+                          maxContentWidth: _kMaxContentWidth,
+                          search: KxSearchField(
+                            controller: _searchController,
+                            onChanged: _onSearchChanged,
+                            hint: 'Search name or symbol',
+                          ),
+                          filters: KxChipBar<CoinFilter>(
+                            options: CoinFilter.values,
+                            selected: _filter,
+                            labelOf: (f) => f.label,
+                            onSelected: _onFilterSelected,
+                          ),
+                        ),
+                      ),
+                      ..._buildBody(coins, inset),
+                      SliverToBoxAdapter(
+                        key: const ValueKey('bottom'),
+                        child: SizedBox(height: bottomClearance),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              if (_coins.error != null && coins != null)
-                Positioned(
-                  left: 16,
-                  right: 16,
-                  bottom: navPad + 10,
-                  child: RefreshErrorBanner(message: '${_coins.error}', onRetry: _reload),
-                ),
-            ],
-          );
-        },
+                if (_coins.error != null && coins != null)
+                  Positioned(
+                    left: 16 + inset,
+                    right: 16 + inset,
+                    bottom: navPad + 10,
+                    child: RefreshErrorBanner(message: '${_coins.error}', onRetry: _reload),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildHeader() {
+  Widget _buildHeader({required bool showRefreshButton}) {
     final isDefaultSort = _sort == CoinSort.marketCap && _descending;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -348,10 +376,19 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
                 ),
               ),
               SourceBadge(source: _coins.source),
+              if (showRefreshButton) ...[
+                const SizedBox(width: 10),
+                _GlassIconButton(
+                  icon: Icons.refresh_rounded,
+                  tooltip: _coins.loading ? 'Refreshing…' : 'Refresh prices',
+                  busy: _coins.loading,
+                  onTap: _coins.loading ? null : _reload,
+                ),
+              ],
               const SizedBox(width: 10),
               _GlassIconButton(
                 icon: Icons.tune_rounded,
-                tooltip: 'Sort',
+                tooltip: 'Sort markets',
                 showDot: !isDefaultSort,
                 onTap: _showSortSheet,
               ),
@@ -359,21 +396,48 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+          padding: const EdgeInsets.fromLTRB(20, 2, 12, 0),
           child: Row(
             children: [
-              const Icon(Icons.schedule_rounded, size: 12, color: KxColors.textMuted),
+              const ExcludeSemantics(child: Icon(Icons.schedule_rounded, size: 12, color: KxColors.textMuted)),
               const SizedBox(width: 5),
               _UpdatedAgo(time: _coins.updatedAt),
-              Text('  ·  ', style: KxText.mono(11, color: KxColors.textMuted)),
+              ExcludeSemantics(
+                child: Text('  ·  ', style: KxText.mono(11, color: KxColors.textMuted)),
+              ),
               Flexible(
-                child: GestureDetector(
-                  onTap: _showSortSheet,
-                  child: Text(
-                    'Sorted by ${_sort.label.toLowerCase()} ${_descending ? '↓' : '↑'}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: KxText.body(11, weight: FontWeight.w500, color: KxColors.textDim),
+                child: Semantics(
+                  button: true,
+                  label:
+                      'Sorted by ${_sort.label.toLowerCase()}, '
+                      '${_descending ? 'descending' : 'ascending'}. Change sort order',
+                  excludeSemantics: true,
+                  child: InkWell(
+                    onTap: _showSortSheet,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      // Vertical padding gives the small label a comfortable tap target.
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              'Sorted by ${_sort.label.toLowerCase()}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: KxText.body(11, weight: FontWeight.w500, color: KxColors.textDim),
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            _descending ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded,
+                            size: 12,
+                            color: KxColors.textDim,
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -384,22 +448,32 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
     ).animate().fadeIn(duration: 500.ms).slideY(begin: -0.15, end: 0, duration: 500.ms, curve: Curves.easeOutCubic);
   }
 
-  List<Widget> _buildBody(List<Coin>? coins) {
+  List<Widget> _buildBody(List<Coin>? coins, double inset) {
     if (coins == null) {
       if (_coins.error != null) {
         return [
           SliverToBoxAdapter(
             key: const ValueKey('error'),
-            child: SizedBox(height: 440, child: ErrorView(message: '${_coins.error}', onRetry: _reload)),
+            child: _readable(
+              SizedBox(
+                height: 440,
+                child: ErrorView(message: '${_coins.error}', onRetry: _reload),
+              ),
+            ),
           ),
         ];
       }
       return [
         SliverToBoxAdapter(
           key: const ValueKey('loading'),
-          child: SizedBox(
-            height: 600,
-            child: SkeletonLoader(),
+          child: _readable(
+            const Column(
+              children: [
+                CoinTileHeader(),
+                // Same card shape/radius as CoinTile, so nothing jumps when data lands.
+                SizedBox(height: 560, child: LoadingView(rows: 8)),
+              ],
+            ),
           ),
         ),
       ];
@@ -407,22 +481,45 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
 
     if (coins.isEmpty) {
       final query = _searchController.text.trim();
+      final filtered = _filter != CoinFilter.all;
+      final String title;
+      final String subtitle;
+      final String actionLabel;
+      if (query.isNotEmpty) {
+        title = 'No results for “$query”';
+        subtitle = filtered
+            ? 'Nothing matches in “${_filter.label}”. Check the spelling or search all coins.'
+            : 'Check the spelling, or try a coin name or ticker like “BTC”.';
+        actionLabel = filtered ? 'Clear search & filter' : 'Clear search';
+      } else {
+        title = 'No coins in “${_filter.label}”';
+        subtitle = 'Nothing matches this filter right now. Try another one.';
+        actionLabel = 'Show all coins';
+      }
       return [
         SliverToBoxAdapter(
           key: const ValueKey('empty'),
-          child: SizedBox(
-            height: 420,
-            child: EmptyView(
-              icon: Icons.search_off_rounded,
-              title: query.isEmpty ? 'No coins match this filter' : 'No coins found for "$query"',
-              subtitle: 'Try a different search term or filter.',
-              actionLabel: 'Clear search & filters',
-              onAction: _clearAll,
+          child: _readable(
+            SizedBox(
+              height: 420,
+              child: EmptyView(
+                icon: Icons.search_off_rounded,
+                title: title,
+                subtitle: subtitle,
+                actionLabel: actionLabel,
+                onAction: _clearAll,
+              ),
             ),
           ),
         ),
       ];
     }
+
+    if (!identical(coins, _indexedList)) {
+      _indexedList = coins;
+      _indexOf = {for (var i = 0; i < coins.length; i++) coins[i].id: i};
+    }
+    final indexOf = _indexOf;
 
     // Replay the staggered entrance only when the list identity changes.
     final listKey = _paramsOf[coins] ?? '';
@@ -433,29 +530,30 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
     final animate = DateTime.now().isBefore(_animateUntil);
 
     return [
-      const SliverToBoxAdapter(key: ValueKey('columns'), child: _ColumnHeader()),
-      SliverList.builder(
+      SliverToBoxAdapter(key: const ValueKey('columns'), child: _readable(const CoinTileHeader())),
+      SliverPadding(
         key: const ValueKey('list'),
-        itemCount: coins.length,
-        findChildIndexCallback: (key) {
-          if (key is! ValueKey<String> || !key.value.startsWith('$listKey#')) return null;
-          final id = key.value.substring(listKey.length + 1);
-          final i = coins.indexWhere((c) => c.id == id);
-          return i < 0 ? null : i;
-        },
-        itemBuilder: (context, i) {
-          final coin = coins[i];
-          return _Entrance(
-            key: ValueKey<String>('$listKey#${coin.id}'),
-            play: animate,
-            index: i,
-            child: CoinTile(
-              coin: coin,
-              heroPrefix: _kListHero,
-              onTap: () => openCoin(context, coin, heroPrefix: _kListHero),
-            ),
-          );
-        },
+        padding: EdgeInsets.symmetric(horizontal: inset),
+        sliver: SliverList.builder(
+          itemCount: coins.length,
+          findChildIndexCallback: (key) {
+            if (key is! ValueKey<String> || !key.value.startsWith('$listKey#')) return null;
+            return indexOf[key.value.substring(listKey.length + 1)];
+          },
+          itemBuilder: (context, i) {
+            final coin = coins[i];
+            return _Entrance(
+              key: ValueKey<String>('$listKey#${coin.id}'),
+              play: animate,
+              index: i,
+              child: CoinTile(
+                coin: coin,
+                heroPrefix: _kListHero,
+                onTap: () => openCoin(context, coin, heroPrefix: _kListHero),
+              ),
+            );
+          },
+        ),
       ),
     ];
   }
@@ -467,10 +565,19 @@ class _CoinListScreenState extends State<CoinListScreen> with WidgetsBindingObse
 
 /// Pinned search + filter chips; frosts over the list once content scrolls under.
 class _FilterBarDelegate extends SliverPersistentHeaderDelegate {
-  _FilterBarDelegate({required this.extent, required this.loading, required this.search, required this.filters});
+  _FilterBarDelegate({
+    required this.extent,
+    required this.loading,
+    required this.maxContentWidth,
+    required this.search,
+    required this.filters,
+  });
 
   final double extent;
   final bool loading;
+
+  /// The frosted backdrop spans the window; the controls stay readable width.
+  final double maxContentWidth;
   final Widget search;
   final Widget filters;
 
@@ -508,9 +615,19 @@ class _FilterBarDelegate extends SliverPersistentHeaderDelegate {
         Column(
           children: [
             const SizedBox(height: 10),
-            Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: search),
+            Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxContentWidth),
+                child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: search),
+              ),
+            ),
             const SizedBox(height: 10),
-            filters,
+            Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: maxContentWidth),
+                child: filters,
+              ),
+            ),
             const Spacer(),
             SizedBox(
               height: 2,
@@ -536,37 +653,20 @@ class _FilterBarDelegate extends SliverPersistentHeaderDelegate {
   bool shouldRebuild(_FilterBarDelegate oldDelegate) => true;
 }
 
-class _ColumnHeader extends StatelessWidget {
-  const _ColumnHeader();
-
-  @override
-  Widget build(BuildContext context) {
-    final style = KxText.label(10, color: KxColors.textMuted);
-    // Mirrors CoinTile: 16 outer + 12 inner padding on the left; 16 + 4 + star on the right.
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(28, 12, 20, 6),
-      child: Row(
-        children: [
-          SizedBox(width: 22, child: Text('#', style: style, textAlign: TextAlign.center)),
-          const SizedBox(width: 8),
-          Expanded(flex: 5, child: Text('ASSET', style: style)),
-          Expanded(flex: 4, child: Text('7D', style: style, textAlign: TextAlign.center)),
-          const SizedBox(width: 10),
-          Text('PRICE · 24H', style: style),
-          const SizedBox(width: 40),
-        ],
-      ),
-    );
-  }
-}
-
 class _TrendingSection extends StatelessWidget {
-  const _TrendingSection({required this.coins});
+  const _TrendingSection({required this.coins, this.clip = false});
 
   final List<Coin> coins;
 
+  /// Clip the carousel at its own edges (needed when it's narrower than the
+  /// window, otherwise pre-built cards would paint beyond the column).
+  final bool clip;
+
   @override
   Widget build(BuildContext context) {
+    // Card content grows with the text scale; give the carousel room for it.
+    final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+    final height = 164 + math.max(0.0, textScale - 1) * 48;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -580,31 +680,38 @@ class _TrendingSection extends StatelessWidget {
               children: [
                 const Icon(Icons.local_fire_department_rounded, size: 14, color: KxColors.warn),
                 const SizedBox(width: 4),
-                Text('24h movers', style: KxText.body(11, weight: FontWeight.w500, color: KxColors.textDim)),
+                Text(
+                  'Top 24h movers',
+                  style: KxText.body(11, weight: FontWeight.w500, color: KxColors.textDim),
+                ),
               ],
             ),
           ),
         ),
         SizedBox(
-          height: 164,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            clipBehavior: Clip.none,
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-            itemCount: coins.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 12),
-            itemBuilder: (context, i) {
-              final coin = coins[i];
-              return TrendingCard(
-                key: ValueKey(coin.id),
-                coin: coin,
-                heroPrefix: _kTrendHero,
-                onTap: () => openCoin(context, coin, heroPrefix: _kTrendHero),
-              )
-                  .animate(delay: (80 + i * 70).ms)
-                  .fadeIn(duration: 400.ms)
-                  .slideX(begin: 0.25, end: 0, duration: 480.ms, curve: Curves.easeOutCubic);
-            },
+          height: height,
+          // Let mouse/trackpad users drag the carousel too (web & desktop).
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(dragDevices: PointerDeviceKind.values.toSet()),
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              clipBehavior: clip ? Clip.hardEdge : Clip.none,
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+              itemCount: coins.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (context, i) {
+                final coin = coins[i];
+                return TrendingCard(
+                      key: ValueKey(coin.id),
+                      coin: coin,
+                      heroPrefix: _kTrendHero,
+                      onTap: () => openCoin(context, coin, heroPrefix: _kTrendHero),
+                    )
+                    .animate(delay: (80 + i * 70).ms)
+                    .fadeIn(duration: 400.ms)
+                    .slideX(begin: 0.25, end: 0, duration: 480.ms, curve: Curves.easeOutCubic);
+              },
+            ),
           ),
         ),
       ],
@@ -636,7 +743,10 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
     super.initState();
     final delayMs = math.min(widget.index, 12) * 40;
     const runMs = 420;
-    _controller = AnimationController(vsync: this, duration: Duration(milliseconds: delayMs + runMs));
+    _controller = AnimationController(
+      vsync: this,
+      duration: Duration(milliseconds: delayMs + runMs),
+    );
     final curved = CurvedAnimation(
       parent: _controller,
       curve: Interval(delayMs / (delayMs + runMs), 1, curve: Curves.easeOutCubic),
@@ -666,44 +776,68 @@ class _EntranceState extends State<_Entrance> with SingleTickerProviderStateMixi
 }
 
 class _GlassIconButton extends StatelessWidget {
-  const _GlassIconButton({required this.icon, required this.tooltip, required this.onTap, this.showDot = false});
+  const _GlassIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+    this.showDot = false,
+    this.busy = false,
+  });
 
   final IconData icon;
   final String tooltip;
-  final VoidCallback onTap;
+
+  /// Null disables the button.
+  final VoidCallback? onTap;
   final bool showDot;
+
+  /// Shows a small spinner in place of the icon.
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
     return Tooltip(
       message: tooltip,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          GlassCard(
-            radius: 14,
-            padding: const EdgeInsets.all(10),
-            onTap: onTap,
-            child: Icon(icon, size: 20, color: KxColors.text),
-          ),
-          if (showDot)
-            Positioned(
-              top: -2,
-              right: -2,
-              child: IgnorePointer(
-                child: Container(
-                  width: 9,
-                  height: 9,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: KxColors.brandGradient,
-                    border: Border.all(color: KxColors.bg, width: 1.5),
-                    boxShadow: [BoxShadow(color: KxColors.cyan.withValues(alpha: 0.6), blurRadius: 6)],
+      child: Semantics(
+        button: true,
+        enabled: onTap != null,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            GlassCard(
+              radius: 14,
+              // 12 + 20 + 12 = 44px: minimum comfortable touch target.
+              padding: const EdgeInsets.all(12),
+              onTap: onTap,
+              child: SizedBox.square(
+                dimension: 20,
+                child: busy
+                    ? const Padding(
+                        padding: EdgeInsets.all(2),
+                        child: CircularProgressIndicator(strokeWidth: 2, color: KxColors.cyan),
+                      )
+                    : Icon(icon, size: 20, color: KxColors.text),
+              ),
+            ),
+            if (showDot)
+              Positioned(
+                top: -2,
+                right: -2,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: KxColors.brandGradient,
+                      border: Border.all(color: KxColors.bg, width: 1.5),
+                      boxShadow: [BoxShadow(color: KxColors.cyan.withValues(alpha: 0.6), blurRadius: 6)],
+                    ),
                   ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -726,7 +860,7 @@ class _UpdatedAgoState extends State<_UpdatedAgo> {
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && TickerMode.getNotifier(context).value) setState(() {});
+      if (mounted && TickerMode.getValuesNotifier(context).value.enabled) setState(() {});
     });
   }
 
@@ -741,6 +875,7 @@ class _UpdatedAgoState extends State<_UpdatedAgo> {
     final t = widget.time;
     return Text(
       t == null ? 'Syncing…' : 'Updated ${timeAgo(t)}',
+      maxLines: 1,
       style: KxText.mono(11, color: KxColors.textMuted),
     );
   }
@@ -755,13 +890,13 @@ class _SortSheet extends StatelessWidget {
   final ValueChanged<bool> onDirection;
 
   static IconData _iconOf(CoinSort s) => switch (s) {
-        CoinSort.marketCap => Icons.pie_chart_outline_rounded,
-        CoinSort.price => Icons.attach_money_rounded,
-        CoinSort.volume => Icons.bar_chart_rounded,
-        CoinSort.change24h => Icons.show_chart_rounded,
-        CoinSort.change7d => Icons.timeline_rounded,
-        CoinSort.name => Icons.sort_by_alpha_rounded,
-      };
+    CoinSort.marketCap => Icons.pie_chart_outline_rounded,
+    CoinSort.price => Icons.attach_money_rounded,
+    CoinSort.volume => Icons.bar_chart_rounded,
+    CoinSort.change24h => Icons.show_chart_rounded,
+    CoinSort.change7d => Icons.timeline_rounded,
+    CoinSort.name => Icons.sort_by_alpha_rounded,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -772,12 +907,11 @@ class _SortSheet extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Color.lerp(KxColors.bgElevated, KxColors.violet, 0.06)!,
-            KxColors.bgElevated,
-          ],
+          colors: [Color.lerp(KxColors.bgElevated, KxColors.violet, 0.06)!, KxColors.bgElevated],
         ),
-        boxShadow: [BoxShadow(color: KxColors.cyan.withValues(alpha: 0.08), blurRadius: 40, offset: const Offset(0, -8))],
+        boxShadow: [
+          BoxShadow(color: KxColors.cyan.withValues(alpha: 0.08), blurRadius: 40, offset: const Offset(0, -8)),
+        ],
       ),
       child: SafeArea(
         top: false,
@@ -801,18 +935,20 @@ class _SortSheet extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Sort markets', style: KxText.display(20)),
+                        Semantics(header: true, child: Text('Sort markets', style: KxText.display(20))),
                         const SizedBox(height: 2),
-                        Text('Choose how the list is ordered',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: KxText.body(12, color: KxColors.textDim)),
+                        Text(
+                          'Choose how the list is ordered',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: KxText.body(12, color: KxColors.textDim),
+                        ),
                       ],
                     ),
                   ),
                   const SizedBox(width: 12),
                   SizedBox(
-                    width: 128,
+                    width: MediaQuery.textScalerOf(context).scale(128).clamp(128.0, 176.0),
                     child: KxSegmented<bool>(
                       options: const [true, false],
                       selected: descending,
@@ -825,14 +961,14 @@ class _SortSheet extends StatelessWidget {
               const SizedBox(height: 18),
               for (var i = 0; i < CoinSort.values.length; i++)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: _SortRow(
-                    label: CoinSort.values[i].label,
-                    icon: _iconOf(CoinSort.values[i]),
-                    selected: CoinSort.values[i] == sort,
-                    onTap: () => onSort(CoinSort.values[i]),
-                  ),
-                )
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _SortRow(
+                        label: CoinSort.values[i].label,
+                        icon: _iconOf(CoinSort.values[i]),
+                        selected: CoinSort.values[i] == sort,
+                        onTap: () => onSort(CoinSort.values[i]),
+                      ),
+                    )
                     .animate(delay: (i * 35).ms)
                     .fadeIn(duration: 260.ms)
                     .slideY(begin: 0.2, end: 0, duration: 320.ms, curve: Curves.easeOutCubic),
@@ -854,6 +990,16 @@ class _SortRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: 'Sort by $label',
+      excludeSemantics: true,
+      child: _sortCard(),
+    );
+  }
+
+  Widget _sortCard() {
     return GlassCard(
       radius: 16,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -883,9 +1029,13 @@ class _SortRow extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: KxText.body(15,
-                  weight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected ? KxColors.text : KxColors.textDim),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: KxText.body(
+                15,
+                weight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? KxColors.text : KxColors.textDim,
+              ),
             ),
           ),
           AnimatedScale(
