@@ -1178,11 +1178,15 @@ class _SupplyCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              Flexible(
+              // Label and value share the row 2:3 so the values form a clean
+              // right-aligned column regardless of label length.
+              Expanded(
+                flex: 2,
                 child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: KxText.body(13, color: KxColors.textDim)),
               ),
               const SizedBox(width: 12),
               Expanded(
+                flex: 3,
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: FittedBox(

@@ -28,6 +28,11 @@ Flutter app  ──HTTP/JSON──▶  Node backend (:8080)  ──▶  CoinGeck
 
 ## Screens
 
+The app has no sign-in. A bottom bar switches between Home, Markets, Stats and Watchlist, and the side menu offers the same tabs plus an About dialog.
+
+- **Home** (opens first)
+  - A global market card: total market cap, 24h change, volume, BTC dominance and coin count.
+  - Top 5 gainers or losers, and a preview of your watchlist, each with a "See all" link to its tab.
 - **Markets**
   - The price ticker, and a Trending carousel of the biggest 24h movers.
   - Search and filter chips (All / Top 10 / Gainers / Losers / Stablecoins) stay pinned while you scroll. Search is debounced and runs on the server.
@@ -46,6 +51,8 @@ Flutter app  ──HTTP/JSON──▶  Node backend (:8080)  ──▶  CoinGeck
   - A summary: number of coins, average 24h change, best and worst performer, and a strip showing each coin's move.
   - Sort chips, swipe to remove with undo. The list is saved on the backend.
 - **Every screen** has loading, error and empty states. If a refresh fails, the old data stays visible with an error banner.
+- **Every layout** works from 320px phones to wide desktop windows (content is centred with a maximum width) and with large system text. Buttons have 44px tap targets and screen-reader labels.
+- Hidden tabs and a backgrounded app stop polling for new prices.
 
 ## Run it (on a machine with Flutter 3.38+ and Node.js 18+)
 
@@ -96,9 +103,9 @@ flutter_app/lib/
   models/ services/ state/  data models, API client, Loadable + WatchlistProvider
   widgets/                  design system: glass, background, animated price,
                             chart, sparkline, controls, nav bar, state views
-  screens/                  splash, shell, markets, detail, stats, watchlist
+  screens/                  splash, shell, home, markets, detail, stats, watchlist
 backend/
-  src/server.js             Express routes, filtering/sorting, watchlist, auth
+  src/server.js             Express routes, filtering/sorting, watchlist, auth API
   src/coingecko.js          upstream client, cache, normalisation
   src/mockData.js           offline demo data
   src/userStore.js          users (users.json), password hashing, tokens
