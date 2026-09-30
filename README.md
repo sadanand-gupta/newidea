@@ -1,14 +1,14 @@
 # KryptoX: crypto market intelligence app
 
-KryptoX is a CoinGecko-style crypto research app. Everything is written in Dart, and every dependency comes from pub.dev.
+KryptoX is a CoinGecko-style crypto research app. The app is written in Flutter/Dart and the backend in Node.js with Express.
 
 | Part | Stack | Packages |
 |------|-------|----------|
 | `flutter_app/` | Flutter 3.38+ | `flutter_animate`, `animations`, `fl_chart`, `google_fonts`, `cached_network_image`, `provider`, `http` |
-| `backend/` | Dart server | `shelf`, `shelf_router`, `http` |
+| `backend/` | Node.js 18+ | `express` (uses the built-in `fetch` and `crypto`) |
 
 ```
-Flutter app  ──HTTP/JSON──▶  Dart backend (:8080)  ──▶  CoinGecko public API
+Flutter app  ──HTTP/JSON──▶  Node backend (:8080)  ──▶  CoinGecko public API
                                    │  60s cache, stale-cache and demo-data fallback
                                    └─ watchlist.json (persisted watchlist)
 ```
@@ -47,14 +47,14 @@ Flutter app  ──HTTP/JSON──▶  Dart backend (:8080)  ──▶  CoinGeck
   - Sort chips, swipe to remove with undo. The list is saved on the backend.
 - **Every screen** has loading, error and empty states. If a refresh fails, the old data stays visible with an error banner.
 
-## Run it (on a machine with Flutter 3.38+)
+## Run it (on a machine with Flutter 3.38+ and Node.js 18+)
 
 **1. Backend**
 ```powershell
 cd backend
-dart pub get
-dart run bin/server.dart          # live CoinGecko data, falls back automatically
-# $env:USE_MOCK="1"; dart run bin/server.dart   # demo data, no network needed
+npm install
+npm start                         # live CoinGecko data, falls back automatically
+# $env:USE_MOCK="1"; npm start    # demo data, no network needed
 ```
 Test it at http://localhost:8080/api/coins?search=bit&sort=price.
 
@@ -82,6 +82,8 @@ flutter test         # unit tests
 | GET | `/api/global` | Market stats plus top gainers, losers and volume |
 | GET | `/api/watchlist` · `/api/watchlist/ids` | Watchlist coins or ids |
 | POST / DELETE | `/api/watchlist/{id}` | Add or remove a coin |
+| POST | `/api/auth/signup` · `/api/auth/login` | Body `{ "username", "password", "email"? }`, returns `{ user, token }` |
+| GET / POST | `/api/auth/profile` · `/api/auth/logout` | Needs `Authorization: Bearer <token>` |
 
 Every data response has the shape `{ "source": "live|cache|mock", "updated_at": <unix>, "data": ... }`.
 
@@ -96,7 +98,8 @@ flutter_app/lib/
                             chart, sparkline, controls, nav bar, state views
   screens/                  splash, shell, markets, detail, stats, watchlist
 backend/
-  bin/server.dart           routes, filtering/sorting, watchlist
-  lib/coingecko.dart        upstream client, cache, normalisation
-  lib/mock_data.dart        offline demo data
+  src/server.js             Express routes, filtering/sorting, watchlist, auth
+  src/coingecko.js          upstream client, cache, normalisation
+  src/mockData.js           offline demo data
+  src/userStore.js          users (users.json), password hashing, tokens
 ```
