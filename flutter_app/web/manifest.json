@@ -1,11 +1,11 @@
 {
-    "name": "kryptox",
-    "short_name": "kryptox",
+    "name": "KryptoX",
+    "short_name": "KryptoX",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#05060B",
+    "theme_color": "#05060B",
+    "description": "Live crypto prices, charts, market stats and a personal watchlist.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

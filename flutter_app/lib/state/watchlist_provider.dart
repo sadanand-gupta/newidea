@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../services/api_service.dart';
+import 'package:kryptox/data/api_service.dart';
 
 /// Watchlist ids, persisted on the backend. Toggles are optimistic and
 /// rolled back if the server call fails.

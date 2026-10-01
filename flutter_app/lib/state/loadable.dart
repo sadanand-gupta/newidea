@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../services/api_service.dart';
+import 'package:kryptox/data/api_service.dart';
 
 /// Holds the loading / error / data state of one API call.
 ///

@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Market data comes from the KryptoX backend. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
-        android:label="kryptox"
+        android:label="KryptoX"
+        android:usesCleartextTraffic="true"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

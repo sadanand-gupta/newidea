@@ -70,8 +70,8 @@ The free CoinGecko API is rate-limited to about 30 calls a minute. When the limi
 **2. App** (in a second terminal)
 ```powershell
 cd flutter_app
-.\setup.ps1          # once: generates android/ios/web/windows folders, enables HTTP on Android
-flutter run          # pick an Android emulator, Chrome or Windows
+flutter pub get
+flutter run          # pick an Android emulator, iPhone simulator, Chrome or Windows
 flutter test         # unit tests
 ```
 
@@ -89,8 +89,6 @@ flutter test         # unit tests
 | GET | `/api/global` | Market stats plus top gainers, losers and volume |
 | GET | `/api/watchlist` · `/api/watchlist/ids` | Watchlist coins or ids |
 | POST / DELETE | `/api/watchlist/{id}` | Add or remove a coin |
-| POST | `/api/auth/signup` · `/api/auth/login` | Body `{ "username", "password", "email"? }`, returns `{ user, token }` |
-| GET / POST | `/api/auth/profile` · `/api/auth/logout` | Needs `Authorization: Bearer <token>` |
 
 Every data response has the shape `{ "source": "live|cache|mock", "updated_at": <unix>, "data": ... }`.
 

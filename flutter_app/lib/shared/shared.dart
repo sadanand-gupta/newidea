@@ -1,0 +1,37 @@
+/// Shared UI building blocks of KryptoX. Features import this barrel.
+library;
+
+export 'widgets/animated_price.dart';
+export 'widgets/change_pill.dart';
+export 'widgets/chip_bar.dart';
+export 'widgets/coin_avatar.dart';
+export 'widgets/coin_tile.dart';
+export 'widgets/content_width.dart';
+export 'widgets/count_up.dart';
+export 'widgets/entrance.dart';
+export 'widgets/glass_card.dart';
+export 'widgets/gradient_button.dart';
+export 'widgets/gradient_text.dart';
+export 'widgets/icon_badge.dart';
+export 'widgets/inline_error.dart';
+export 'widgets/kx_background.dart';
+export 'widgets/kx_icon_button.dart';
+export 'widgets/kx_switcher.dart';
+export 'widgets/loading_line.dart';
+export 'widgets/logo_mark.dart';
+export 'widgets/nav_bar.dart';
+export 'widgets/page_header.dart';
+export 'widgets/price_chart.dart';
+export 'widgets/refresh_error_banner.dart';
+export 'widgets/search_field.dart';
+export 'widgets/section_header.dart';
+export 'widgets/segmented_control.dart';
+export 'widgets/skeleton.dart';
+export 'widgets/source_badge.dart';
+export 'widgets/sparkline.dart';
+export 'widgets/stat_tile.dart';
+export 'widgets/state_views.dart';
+export 'widgets/ticker_tape.dart';
+export 'widgets/trending_card.dart';
+export 'widgets/updated_ago.dart';
+export 'widgets/watchlist_star.dart';

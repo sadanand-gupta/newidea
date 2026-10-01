@@ -1,5 +1,5 @@
-import 'package:kryptox/models/coin.dart';
-import 'package:kryptox/widgets/formatters.dart';
+import 'package:kryptox/data/models/coin.dart';
+import 'package:kryptox/core/utils/formatters.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
