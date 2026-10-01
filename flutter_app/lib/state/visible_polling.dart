@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 /// Polls a screen's data every [pollInterval], but only while the screen is
@@ -32,7 +31,7 @@ import 'package:flutter/widgets.dart';
 mixin VisiblePolling<T extends StatefulWidget> on State<T> {
   Timer? _pollTimer;
   AppLifecycleListener? _lifecycle;
-  ValueListenable<TickerModeData>? _tickerMode;
+  bool _tickerEnabled = true;
   bool _polling = false;
 
   /// Time between polls while visible.
@@ -56,8 +55,7 @@ mixin VisiblePolling<T extends StatefulWidget> on State<T> {
   /// True while on screen and the app is not paused / hidden.
   bool get isVisible {
     if (!mounted) return false;
-    final tickerEnabled = _tickerMode?.value.enabled ?? TickerMode.getValuesNotifier(context).value.enabled;
-    return tickerEnabled && _isForeground(WidgetsBinding.instance.lifecycleState);
+    return _tickerEnabled && _isForeground(WidgetsBinding.instance.lifecycleState);
   }
 
   /// True when [lastUpdate] is null or at least [pollInterval] ago.
@@ -77,10 +75,10 @@ mixin VisiblePolling<T extends StatefulWidget> on State<T> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final notifier = TickerMode.getValuesNotifier(context);
-    if (!identical(notifier, _tickerMode)) {
-      _tickerMode?.removeListener(_onTickerModeChanged);
-      _tickerMode = notifier..addListener(_onTickerModeChanged);
+    final newEnabled = TickerMode.of(context);
+    if (newEnabled != _tickerEnabled) {
+      _tickerEnabled = newEnabled;
+      if (newEnabled) _scheduleOnVisible();
     }
   }
 
@@ -88,7 +86,6 @@ mixin VisiblePolling<T extends StatefulWidget> on State<T> {
   void dispose() {
     _stopPolling();
     _lifecycle?.dispose();
-    _tickerMode?.removeListener(_onTickerModeChanged);
     super.dispose();
   }
 
@@ -126,9 +123,7 @@ mixin VisiblePolling<T extends StatefulWidget> on State<T> {
     }
   }
 
-  void _onTickerModeChanged() {
-    if (_tickerMode?.value.enabled ?? false) _scheduleOnVisible();
-  }
+
 
   void _scheduleOnVisible() {
     WidgetsBinding.instance.addPostFrameCallback((_) {

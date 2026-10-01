@@ -55,7 +55,7 @@ class _UpdatedAgoState extends State<UpdatedAgo> {
 
   void _tick() {
     if (!mounted) return;
-    if (TickerMode.getValuesNotifier(context).value.enabled) setState(() {});
+    if (TickerMode.of(context)) setState(() {});
     _schedule();
   }
 
